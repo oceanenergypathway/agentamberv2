@@ -276,7 +276,7 @@ def ask_claude(question, sender_name, sender_email):
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=2000,
+        max_tokens=1000,
         system=SYSTEM_PROMPT,
         messages=[
             {
@@ -287,11 +287,7 @@ def ask_claude(question, sender_name, sender_email):
                 )
             }
         ],
-        mcp_servers=[{
-            "type": "url",
-            "url": "https://mcp.monday.com/mcp",
-            "name": "monday-mcp"
-        }]
+
     )
     return response.content[0].text
 
