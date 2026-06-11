@@ -1,2 +1,2 @@
-anthropic==0.52.0
+anthropic[mcp]>=0.50.0
 python-dotenv>=1.0.0
