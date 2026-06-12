@@ -227,18 +227,39 @@ def get_staff_history(staff_email, limit=5):
 
 def monday_api(query):
     data = json.dumps({"query": query}).encode("utf-8")
+    auth = f"Bearer {MONDAY_TOKEN}" if not MONDAY_TOKEN.startswith("Bearer") else MONDAY_TOKEN
     req = urllib.request.Request(
         "https://api.monday.com/v2",
         data=data,
         headers={
-            "Authorization": f"Bearer {MONDAY_TOKEN}" if not MONDAY_TOKEN.startswith("Bearer") else MONDAY_TOKEN,
+            "Authorization": auth,
             "Content-Type": "application/json",
             "API-Version": "2024-01"
         },
         method="POST"
     )
-    resp = urllib.request.urlopen(req, timeout=30)
-    return json.loads(resp.read())
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        raw = resp.read()
+        result = json.loads(raw)
+        # Log if errors returned
+        if result.get("errors"):
+            log.error(f"Monday API errors: {result['errors']}")
+        if result.get("data"):
+            boards = result["data"].get("boards", [])
+            if boards:
+                items = boards[0].get("items_page", {}).get("items", [])
+                log.info(f"Monday API returned {len(items)} items from board")
+            else:
+                log.warning(f"Monday API returned no boards. Full response: {str(result)[:500]}")
+        return result
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        log.error(f"Monday API HTTP error {e.code}: {body[:500]}")
+        raise
+    except Exception as e:
+        log.error(f"Monday API error: {e}")
+        raise
 
 def days_ago(iso_str):
     if not iso_str:
