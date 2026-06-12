@@ -517,7 +517,7 @@ def execute_tool(tool_name, tool_input):
                     created_at
                     updated_at
                     creator {{ name }}
-                    column_values {{ id title text }}
+                    column_values {{ id text }}
                     updates(limit: 2) {{
                       body
                       created_at
