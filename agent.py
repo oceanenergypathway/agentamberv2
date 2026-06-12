@@ -233,6 +233,96 @@ def get_recent_intel(days=7):
     except:
         return []
 
+def write_journal_entry(country, board_data, previous_entry=None):
+    """Ask Claude to write a narrative journal entry for a country based on board data."""
+    try:
+        prev_context = f"Previous entry: {previous_entry}" if previous_entry else "No previous entry."
+        prompt = f"""You are writing a brief programme journal entry for {country} at OEP.
+        
+{prev_context}
+
+Current board data:
+{json.dumps(board_data, indent=2, default=str)[:3000]}
+
+Write a 3-5 sentence narrative journal entry that captures:
+- Overall health trend (improving/stable/deteriorating)
+- Key items of concern with specific names
+- Any notable activity or lack thereof
+- Comparison to previous week if available
+
+Be specific and factual. Write in past tense as if recording observations.
+Start with the date and country name."""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        entry = response.content[0].text
+        
+        # Save to database
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO amber_state (key, value, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = NOW()
+                """, (f"journal_{country.lower().replace(' ', '_')}", entry, entry))
+                conn.commit()
+        log.info(f"Journal entry written for {country}")
+        return entry
+    except Exception as e:
+        log.error(f"Journal write failed for {country}: {e}")
+        return None
+
+def get_journal_entry(country):
+    """Get the most recent journal entry for a country."""
+    return get_state(f"journal_{country.lower().replace(' ', '_')}")
+
+def get_memory_context(question, sender_email):
+    """Build a rich memory context before responding to an email."""
+    context = []
+    
+    # 1. Staff interaction history
+    history = get_staff_history(sender_email)
+    if history:
+        context.append("PREVIOUS INTERACTIONS WITH THIS PERSON:")
+        for q, a, ts in history[:3]:
+            context.append(f"[{ts.strftime('%d %b %Y')}] They asked: {q[:150]}
+You replied: {a[:150]}")
+    
+    # 2. Country journal entries if question mentions a country
+    countries_mentioned = [c for c in COUNTRY_BOARDS.keys() if c.lower() in question.lower()]
+    if not countries_mentioned and any(kw in question.lower() for kw in ["board", "programme", "all", "country", "briefing"]):
+        countries_mentioned = list(COUNTRY_BOARDS.keys())
+    
+    if countries_mentioned:
+        context.append("
+PROGRAMME JOURNAL (Amber's own notes from previous weeks):")
+        for country in countries_mentioned[:5]:  # Limit to avoid token overload
+            entry = get_journal_entry(country)
+            if entry:
+                context.append(f"{entry}")
+    
+    # 3. Persistent issues
+    persistent = get_persistent_issues()
+    if persistent:
+        context.append("
+PERSISTENT ISSUES (flagged 3+ consecutive checks):")
+        for board, issue_type, desc, times, first_seen in persistent:
+            context.append(f"- {board}: {desc} (flagged {times} times since {first_seen.strftime('%d %b')})")
+    
+    # 4. Recent market intel
+    intel = get_recent_intel(days=7)
+    if intel and any(kw in question.lower() for kw in ["market", "news", "intel", "regulation", "policy", "briefing"]):
+        context.append("
+RECENT MARKET INTELLIGENCE:")
+        for country, headline, summary, source, ts in intel[:8]:
+            context.append(f"{country}: {headline} — {summary[:150]}")
+    
+    return "
+".join(context) if context else ""
+
 def save_interaction(staff_email, staff_name, question, response):
     try:
         with get_db() as conn:
@@ -425,12 +515,15 @@ def get_board_deep(board_id, board_name):
         log.error(f"Error fetching {board_name}: {e}")
         return {"board": board_name, "error": str(e)}
 
-def get_all_boards():
+def get_all_boards(write_journals=False):
     summaries = []
     for name, board_id in COUNTRY_BOARDS.items():
         log.info(f"Fetching: {name}...")
         data = get_board_deep(board_id, name)
         summaries.append(data)
+        if write_journals and "error" not in data:
+            prev = get_journal_entry(name)
+            write_journal_entry(name, data, prev)
         time.sleep(0.5)
     save_board_snapshot(summaries)
     return summaries
@@ -649,7 +742,7 @@ def should_send_weekly_briefing():
 
 def send_weekly_briefing():
     log.info("Generating weekly briefing...")
-    board_data = get_all_boards()
+    board_data = get_all_boards(write_journals=True)
     intel = get_recent_intel(days=7)
     persistent = get_persistent_issues()
 
