@@ -231,7 +231,7 @@ def monday_api(query):
         "https://api.monday.com/v2",
         data=data,
         headers={
-            "Authorization": MONDAY_TOKEN,
+            "Authorization": f"Bearer {MONDAY_TOKEN}" if not MONDAY_TOKEN.startswith("Bearer") else MONDAY_TOKEN,
             "Content-Type": "application/json",
             "API-Version": "2024-01"
         },
