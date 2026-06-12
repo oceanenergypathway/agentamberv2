@@ -40,6 +40,8 @@ OEP_DOMAIN     = "oceanenergypathway.org"
 client = Anthropic()
 pending = {}
 
+MASTER_BOARD_ID = 1747605081
+
 COUNTRY_BOARDS = {
     "Brazil":      1767248587,
     "India":       1767246703,
@@ -50,6 +52,18 @@ COUNTRY_BOARDS = {
     "Mexico":      2007096589,
     "Australia":   1955282782,
     "Colombia":    1879431534,
+}
+
+# Master board column IDs
+MASTER_COLS = {
+    "status":   "status_mkkbx909",
+    "timeline": "timeline_mkkba97f",
+    "owner":    "people_mkkb9mp7",
+    "budget":   "budget_mkkbvp84",
+    "funder":   "funder_mkkbxabc",
+    "location": "location_mkkbdgjf",
+    "code":     "project_code_mkkb9xjq",
+    "consultant": "consultant_mkkbfp5d",
 }
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -353,37 +367,75 @@ def days_ago(iso_str):
         return None
 
 def get_board_deep(board_id, board_name):
+    """
+    Pull project data from the master OEP Projects board filtered by country location.
+    Also pulls activity logs from the country board.
+    """
     try:
-        items_result = monday_query(f"""
-        {{
-          boards(ids: [{board_id}]) {{
-            name
-            items_page(limit: 50) {{
-              items {{
-                id
-                name
-                state
-                created_at
-                updated_at
-                creator {{ name }}
-                column_values {{ id text value }}
-                updates(limit: 2) {{
-                  body
-                  created_at
-                  creator {{ name }}
-                }}
-                subitems {{
-                  id
-                  name
-                  updated_at
-                  column_values {{ id text value }}
+        # Step 1: Get all items from master board for this country
+        # We paginate to get all items
+        all_items = []
+        cursor = None
+        
+        while True:
+            cursor_part = f', cursor: "{cursor}"' if cursor else ""
+            result = monday_query(f"""
+            {{
+              boards(ids: [{MASTER_BOARD_ID}]) {{
+                items_page(limit: 100{cursor_part}) {{
+                  cursor
+                  items {{
+                    id
+                    name
+                    state
+                    created_at
+                    updated_at
+                    creator {{ name }}
+                    column_values {{
+                      id
+                      text
+                      value
+                    }}
+                    updates(limit: 2) {{
+                      body
+                      created_at
+                      creator {{ name }}
+                    }}
+                    subitems {{
+                      id
+                      name
+                      updated_at
+                      column_values {{ id text value }}
+                    }}
+                  }}
                 }}
               }}
             }}
-          }}
-        }}
-        """)
+            """)
+            
+            page = result.get("data", {}).get("boards", [{}])[0].get("items_page", {})
+            items = page.get("items", [])
+            all_items.extend(items)
+            
+            next_cursor = page.get("cursor")
+            if not next_cursor or not items:
+                break
+            cursor = next_cursor
 
+        # Step 2: Filter by country location
+        def get_col_val(item, col_id):
+            for cv in item.get("column_values", []):
+                if cv["id"] == col_id and cv.get("text"):
+                    return cv["text"]
+            return ""
+
+        country_items = [
+            i for i in all_items 
+            if board_name.lower() in get_col_val(i, MASTER_COLS["location"]).lower()
+            and i.get("state") != "deleted"
+        ]
+
+        # Step 3: Get activity log from country board (captures comments etc)
         activity_result = monday_query(f"""
         {{
           boards(ids: [{board_id}]) {{
@@ -396,45 +448,24 @@ def get_board_deep(board_id, board_name):
           }}
         }}
         """)
+        activity_logs = activity_result.get("data", {}).get("boards", [{}])[0].get("activity_logs", [])
 
-        board_data = items_result.get("data", {})
-        boards = board_data.get("boards", [])
-        if not boards:
-            return {"board": board_name, "error": "No board data returned"}
-        items = boards[0].get("items_page", {}).get("items", [])
-        
-        activity_board_data = activity_result.get("data", {})
-        activity_boards = activity_board_data.get("boards", [])
-        activity_logs = activity_boards[0].get("activity_logs", []) if activity_boards else []
         now = datetime.now(timezone.utc)
-
         processed_items = []
-        for item in items:
-            if item.get("state") == "deleted":
-                continue
+
+        for item in country_items:
             item_updated = days_ago(item.get("updated_at"))
             item_created = days_ago(item.get("created_at"))
-            # Extract column values - check both ID and title since OEP uses mirror columns
-            cols_by_id = {cv["id"]: cv["text"] for cv in item.get("column_values", []) if cv.get("text")}
-            cols_by_title = {}
-            for cv in item.get("column_values", []):
-                if cv.get("text"):
-                    # Normalise title to lowercase for matching
-                    title = cv.get("id", "").lower()
-                    cols_by_title[title] = cv["text"]
-            
-            def get_col(*keys):
-                """Try multiple key variations to find a column value."""
-                for key in keys:
-                    # Try exact ID match
-                    if key in cols_by_id:
-                        return cols_by_id[key]
-                    # Try partial ID match (e.g. "status" matches "status_mkm0ysah")
-                    for col_id, val in cols_by_id.items():
-                        if col_id.startswith(key + "_") or col_id == key:
-                            return val
-                return ""
-            
+
+            # Get column values from master board
+            status_val   = get_col_val(item, MASTER_COLS["status"])
+            timeline_val = get_col_val(item, MASTER_COLS["timeline"])
+            owner_val    = get_col_val(item, MASTER_COLS["owner"])
+            budget_val   = get_col_val(item, MASTER_COLS["budget"])
+            funder_val   = get_col_val(item, MASTER_COLS["funder"])
+            code_val     = get_col_val(item, MASTER_COLS["code"])
+
+            # Latest comment
             latest_comment = None
             if item.get("updates"):
                 latest = item["updates"][0]
@@ -443,11 +474,12 @@ def get_board_deep(board_id, board_name):
                     "by": latest.get("creator", {}).get("name", "unknown"),
                     "days_ago": days_ago(latest.get("created_at"))
                 }
-            # Check if project is closed based on subitems
+
+            # Check subitem closure
             is_closed = False
             effectively_closed = False
             subitem_activity = None
-            
+
             if item.get("subitems"):
                 subitems = item["subitems"]
                 open_subitems = []
@@ -457,46 +489,48 @@ def get_board_deep(board_id, board_name):
                         if cv.get("text"):
                             sub_status = cv["text"].lower()
                             break
-                    is_done = sub_status in ["done", "complete", "completed", "skip", "skipped", ""]
+                    is_done = sub_status in ["done", "complete", "completed", "skip", "skipped", "not applicable", "n/a", ""]
                     if not is_done:
                         open_subitems.append(sub["name"])
-                
+
                 if len(open_subitems) == 0:
                     is_closed = True
                 elif len(open_subitems) == 1 and any(
-                    kw in open_subitems[0].lower() 
+                    kw in open_subitems[0].lower()
                     for kw in ["chidinma", "final evaluation", "mel", "final eval"]
                 ):
                     effectively_closed = True
-                
+
                 subitem_activity = {
                     "count": len(subitems),
                     "open_count": len(open_subitems),
                     "is_closed": is_closed,
                     "effectively_closed": effectively_closed,
-                    "open_subitems": open_subitems[:3]
                 }
-            status_val = get_col("status", "color", "status_mkm0ysah")
-            timeline_val = get_col("timeline", "date", "timeline_mkm0rfpt")
-            owner_val = get_col("oep_lead", "person", "people", "oep_lead_mkm0vykk")
-            budget_val = get_col("budget", "budget_mkm0gdf7")
-            funder_val = get_col("funder", "funder_mkm0grx3")
-            
-            flags = []
-            if not status_val:
-                flags.append("no_status")
-            if not timeline_val:
-                flags.append("no_timeline")
-            if not owner_val:
-                flags.append("no_owner")
-            if item_created and item_updated and item_created > 30 and abs(item_created - item_updated) < 2:
-                flags.append("never_updated_since_creation")
 
-            # Skip completed items from active analysis
+            # Status-based closure
             is_status_complete = status_val.lower() in ["done", "completed", "complete"] if status_val else False
+
+            # Data quality flags (only for active items)
+            flags = []
+            if not is_status_complete and not is_closed and not effectively_closed:
+                if not status_val:
+                    flags.append("no_status")
+                if not timeline_val:
+                    flags.append("no_timeline")
+                if not owner_val:
+                    flags.append("no_owner")
+                if item_created and item_updated and item_created > 30 and abs(item_created - item_updated) < 2:
+                    flags.append("never_updated_since_creation")
+
+            # Check for monitoring item note
+            is_monitoring = False
+            if latest_comment and "monitoring item" in latest_comment.get("body", "").lower():
+                is_monitoring = True
 
             processed_items.append({
                 "name": item["name"],
+                "code": code_val,
                 "id": item["id"],
                 "created_days_ago": item_created,
                 "updated_days_ago": item_updated,
@@ -508,45 +542,36 @@ def get_board_deep(board_id, board_name):
                 "status_is_complete": is_status_complete,
                 "creator": item.get("creator", {}).get("name", "unknown"),
                 "latest_comment": latest_comment,
-                "subitems": subitem_activity,
+                "subitem_activity": subitem_activity,
                 "data_quality_flags": flags,
                 "is_closed": is_closed,
                 "effectively_closed": effectively_closed,
+                "is_monitoring": is_monitoring,
             })
 
-        processed_activity = []
-        for entry in activity_logs[:20]:
-            ts = entry.get("created_at")
-            days = None
-            if ts:
-                try:
-                    ts_seconds = int(ts) / 10_000_000
-                    dt = datetime.fromtimestamp(ts_seconds, tz=timezone.utc)
-                    days = (now - dt).days
-                except:
-                    pass
-            processed_activity.append({
-                "event": entry.get("event", ""),
-                "by": entry.get("user", {}).get("name", "system") if entry.get("user") else "system",
-                "days_ago": days,
-            })
+        # Separate active from closed
+        active_items = [
+            i for i in processed_items
+            if not i.get("is_closed")
+            and not i.get("effectively_closed")
+            and not i.get("status_is_complete")
+            and not i.get("is_monitoring")
+        ]
+        closed_items = [
+            i for i in processed_items
+            if i.get("is_closed") or i.get("effectively_closed") or i.get("status_is_complete")
+        ]
+        monitoring_items = [i for i in processed_items if i.get("is_monitoring")]
 
-        # Separate active from closed items
-        active_items = [i for i in processed_items 
-                       if not i.get("is_closed") and not i.get("effectively_closed")
-                       and not i.get("status_is_complete", False)]
-        closed_items = [i for i in processed_items 
-                       if i.get("is_closed") or i.get("effectively_closed")
-                       or i.get("status_is_complete", False)]
-        
         total = len(processed_items)
         active_count = len(active_items)
         closed_count = len(closed_items)
-        
+
         stats = {
             "total_items": total,
             "active_items": active_count,
             "closed_items": closed_count,
+            "monitoring_items": len(monitoring_items),
             "items_stale_30_days": sum(1 for i in active_items if i["updated_days_ago"] and i["updated_days_ago"] > 30),
             "items_stale_90_days": sum(1 for i in active_items if i["updated_days_ago"] and i["updated_days_ago"] > 90),
             "items_never_updated": sum(1 for i in active_items if "never_updated_since_creation" in i["data_quality_flags"]),
@@ -554,29 +579,79 @@ def get_board_deep(board_id, board_name):
             "items_no_timeline": sum(1 for i in active_items if "no_timeline" in i["data_quality_flags"]),
         }
 
+        # Process activity log
+        processed_activity = []
+        for entry in activity_logs[:10]:
+            ts = entry.get("created_at")
+            d = None
+            if ts:
+                try:
+                    ts_seconds = int(ts) / 10_000_000
+                    dt = datetime.fromtimestamp(ts_seconds, tz=timezone.utc)
+                    d = (now - dt).days
+                except:
+                    pass
+            processed_activity.append({
+                "event": entry.get("event", ""),
+                "by": entry.get("user", {}).get("name", "system") if entry.get("user") else "system",
+                "days_ago": d,
+            })
+
         most_recent = processed_activity[0] if processed_activity else None
 
-        # Track issues in database
+        # Track persistent issues
         if stats["items_stale_90_days"] > 0:
             track_issue(board_name, "stale_items",
-                f"{stats['items_stale_90_days']} items not updated in 90+ days")
+                f"{stats['items_stale_90_days']} active items not updated in 90+ days")
         if stats["items_no_owner"] > 2:
             track_issue(board_name, "missing_owners",
-                f"{stats['items_no_owner']} items have no owner assigned")
+                f"{stats['items_no_owner']} active items have no owner assigned")
+
+        # Cross-reference: find items where master says Active but country board shows no activity
+        cross_ref_flags = []
+        for item in active_items:
+            master_status = item.get("status", "").lower()
+            days_inactive = item.get("updated_days_ago") or 0
+            has_comment = item.get("latest_comment") is not None
+            
+            # Active on master board but dormant on country board
+            if master_status == "active" and days_inactive > 60 and not has_comment:
+                cross_ref_flags.append({
+                    "item": item["name"],
+                    "code": item.get("code", ""),
+                    "issue": f"Master board shows Active but no country board activity in {days_inactive} days",
+                    "severity": "high" if days_inactive > 90 else "medium"
+                })
+            
+            # Has owner on master but comments show different person doing the work
+            if item.get("owner") and item.get("latest_comment"):
+                comment_by = item["latest_comment"].get("by", "")
+                owner = item.get("owner", "")
+                if comment_by and owner and comment_by.lower() not in owner.lower() and owner.lower() not in comment_by.lower():
+                    cross_ref_flags.append({
+                        "item": item["name"],
+                        "code": item.get("code", ""),
+                        "issue": f"Owner on master is '{owner}' but last comment was by '{comment_by}' — check if ownership is correct",
+                        "severity": "low"
+                    })
 
         return {
             "board": board_name,
             "board_id": board_id,
             "total_items": total,
+            "active_items_count": active_count,
+            "closed_items_count": closed_count,
             "most_recent_any_activity": most_recent,
             "summary_stats": stats,
             "active_items": sorted(active_items, key=lambda x: x.get("updated_days_ago") or 0, reverse=True),
-            "closed_item_count": closed_count,
-            "recent_activity": processed_activity[:10],
+            "recent_activity": processed_activity[:5],
+            "cross_reference_flags": cross_ref_flags,
         }
 
     except Exception as e:
         log.error(f"Error fetching {board_name}: {e}")
+        import traceback
+        log.error(traceback.format_exc())
         return {"board": board_name, "error": str(e)}
 
 def get_all_boards(write_journals=False):
@@ -690,6 +765,9 @@ DATA QUALITY — always flag:
 - never_updated_since_creation: likely placeholder
 
 WHEN YOU HAVE BOARD DATA: be specific — name items, owners, reference comments
+CROSS-REFERENCE FLAGS: when you see cross_reference_flags in the data, surface these — they indicate 
+discrepancies between what the master board says (official status) and what's actually happening 
+on the country board (real activity). These are often the most actionable insights.
 WHEN YOU HAVE MARKET INTEL: connect it to OEP's current projects, identify gaps
 WHEN YOU HAVE PERSISTENT ISSUES: escalate clearly, be direct about urgency
 WHEN MAKING RECOMMENDATIONS: ground them in both board data AND market context
