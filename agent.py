@@ -372,6 +372,12 @@ def get_board_deep(board_id, board_name):
                   created_at
                   creator {{ name }}
                 }}
+                subitems {{
+                  id
+                  name
+                  updated_at
+                  column_values {{ id text value }}
+                }}
               }}
             }}
           }}
@@ -417,7 +423,39 @@ def get_board_deep(board_id, board_name):
                     "by": latest.get("creator", {}).get("name", "unknown"),
                     "days_ago": days_ago(latest.get("created_at"))
                 }
+            # Check if project is closed based on subitems
+            is_closed = False
+            effectively_closed = False
             subitem_activity = None
+            
+            if item.get("subitems"):
+                subitems = item["subitems"]
+                open_subitems = []
+                for sub in subitems:
+                    sub_status = ""
+                    for cv in sub.get("column_values", []):
+                        if cv.get("text"):
+                            sub_status = cv["text"].lower()
+                            break
+                    is_done = sub_status in ["done", "complete", "completed", "skip", "skipped", ""]
+                    if not is_done:
+                        open_subitems.append(sub["name"])
+                
+                if len(open_subitems) == 0:
+                    is_closed = True
+                elif len(open_subitems) == 1 and any(
+                    kw in open_subitems[0].lower() 
+                    for kw in ["chidinma", "final evaluation", "mel", "final eval"]
+                ):
+                    effectively_closed = True
+                
+                subitem_activity = {
+                    "count": len(subitems),
+                    "open_count": len(open_subitems),
+                    "is_closed": is_closed,
+                    "effectively_closed": effectively_closed,
+                    "open_subitems": open_subitems[:3]
+                }
             flags = []
             if not cols.get("status") and not cols.get("color"):
                 flags.append("no_status")
@@ -440,6 +478,8 @@ def get_board_deep(board_id, board_name):
                 "latest_comment": latest_comment,
                 "subitems": subitem_activity,
                 "data_quality_flags": flags,
+                "is_closed": is_closed,
+                "effectively_closed": effectively_closed,
             })
 
         processed_activity = []
@@ -459,13 +499,27 @@ def get_board_deep(board_id, board_name):
                 "days_ago": days,
             })
 
+        # Separate active from closed items
+        active_items = [i for i in processed_items 
+                       if not i.get("is_closed") and not i.get("effectively_closed")
+                       and i.get("status", "").lower() not in ["done", "completed", "complete"]]
+        closed_items = [i for i in processed_items 
+                       if i.get("is_closed") or i.get("effectively_closed")
+                       or i.get("status", "").lower() in ["done", "completed", "complete"]]
+        
         total = len(processed_items)
+        active_count = len(active_items)
+        closed_count = len(closed_items)
+        
         stats = {
-            "items_stale_30_days": sum(1 for i in processed_items if i["updated_days_ago"] and i["updated_days_ago"] > 30),
-            "items_stale_90_days": sum(1 for i in processed_items if i["updated_days_ago"] and i["updated_days_ago"] > 90),
-            "items_never_updated": sum(1 for i in processed_items if "never_updated_since_creation" in i["data_quality_flags"]),
-            "items_no_owner": sum(1 for i in processed_items if "no_owner" in i["data_quality_flags"]),
-            "items_no_timeline": sum(1 for i in processed_items if "no_timeline" in i["data_quality_flags"]),
+            "total_items": total,
+            "active_items": active_count,
+            "closed_items": closed_count,
+            "items_stale_30_days": sum(1 for i in active_items if i["updated_days_ago"] and i["updated_days_ago"] > 30),
+            "items_stale_90_days": sum(1 for i in active_items if i["updated_days_ago"] and i["updated_days_ago"] > 90),
+            "items_never_updated": sum(1 for i in active_items if "never_updated_since_creation" in i["data_quality_flags"]),
+            "items_no_owner": sum(1 for i in active_items if "no_owner" in i["data_quality_flags"]),
+            "items_no_timeline": sum(1 for i in active_items if "no_timeline" in i["data_quality_flags"]),
         }
 
         most_recent = processed_activity[0] if processed_activity else None
@@ -484,7 +538,8 @@ def get_board_deep(board_id, board_name):
             "total_items": total,
             "most_recent_any_activity": most_recent,
             "summary_stats": stats,
-            "items": sorted(processed_items, key=lambda x: x.get("updated_days_ago") or 0, reverse=True),
+            "active_items": sorted(active_items, key=lambda x: x.get("updated_days_ago") or 0, reverse=True),
+            "closed_item_count": closed_count,
             "recent_activity": processed_activity[:10],
         }
 
