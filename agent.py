@@ -496,8 +496,8 @@ def execute_tool(tool_name, tool_input):
                     created_at
                     updated_at
                     creator {{ name }}
-                    column_values {{ id title text value }}
-                    updates(limit: 3) {{
+                    column_values {{ id title text }}
+                    updates(limit: 2) {{
                       body
                       created_at
                       creator {{ name }}
@@ -506,13 +506,14 @@ def execute_tool(tool_name, tool_input):
                       id
                       name
                       updated_at
-                      column_values {{ id title text value }}
+                      column_values {{ id text }}
                     }}
                   }}
                 }}
               }}
             }}
             """)
+
             
             board = result.get("data", {}).get("boards", [{}])[0]
             items = board.get("items_page", {}).get("items", [])
