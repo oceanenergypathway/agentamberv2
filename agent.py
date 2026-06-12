@@ -233,41 +233,31 @@ def get_recent_intel(days=7):
     except:
         return []
 
+
 def write_journal_entry(country, board_data, previous_entry=None):
-    """Ask Claude to write a narrative journal entry for a country based on board data."""
+    """Ask Claude to write a narrative journal entry for a country."""
     try:
         prev_context = f"Previous entry: {previous_entry}" if previous_entry else "No previous entry."
-        prompt = f"""You are writing a brief programme journal entry for {country} at OEP.
-        
-{prev_context}
-
-Current board data:
-{json.dumps(board_data, indent=2, default=str)[:3000]}
-
-Write a 3-5 sentence narrative journal entry that captures:
-- Overall health trend (improving/stable/deteriorating)
-- Key items of concern with specific names
-- Any notable activity or lack thereof
-- Comparison to previous week if available
-
-Be specific and factual. Write in past tense as if recording observations.
-Start with the date and country name."""
-
+        prompt = (
+            f"Write a 3-5 sentence programme journal entry for {country} at OEP. "
+            f"{prev_context} "
+            f"Board data: {json.dumps(board_data, default=str)[:2000]} "
+            "Be specific and factual. Start with date and country name."
+        )
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}]
         )
         entry = response.content[0].text
-        
-        # Save to database
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO amber_state (key, value, updated_at)
-                    VALUES (%s, %s, NOW())
-                    ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = NOW()
-                """, (f"journal_{country.lower().replace(' ', '_')}", entry, entry))
+                key = "journal_" + country.lower().replace(" ", "_")
+                cur.execute(
+                    "INSERT INTO amber_state (key, value, updated_at) VALUES (%s, %s, NOW()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = NOW()",
+                    (key, entry, entry)
+                )
                 conn.commit()
         log.info(f"Journal entry written for {country}")
         return entry
@@ -276,52 +266,39 @@ Start with the date and country name."""
         return None
 
 def get_journal_entry(country):
-    """Get the most recent journal entry for a country."""
-    return get_state(f"journal_{country.lower().replace(' ', '_')}")
+    key = "journal_" + country.lower().replace(" ", "_")
+    return get_state(key)
 
 def get_memory_context(question, sender_email):
-    """Build a rich memory context before responding to an email."""
+    """Build memory context before responding."""
     context = []
-    
-    # 1. Staff interaction history
     history = get_staff_history(sender_email)
     if history:
         context.append("PREVIOUS INTERACTIONS WITH THIS PERSON:")
         for q, a, ts in history[:3]:
-            context.append(f"[{ts.strftime('%d %b %Y')}] They asked: {q[:150]}
-You replied: {a[:150]}")
-    
-    # 2. Country journal entries if question mentions a country
+            date_str = ts.strftime("%d %b %Y")
+            context.append(f"[{date_str}] Asked: {q[:150]} | Replied: {a[:150]}")
     countries_mentioned = [c for c in COUNTRY_BOARDS.keys() if c.lower() in question.lower()]
     if not countries_mentioned and any(kw in question.lower() for kw in ["board", "programme", "all", "country", "briefing"]):
         countries_mentioned = list(COUNTRY_BOARDS.keys())
-    
     if countries_mentioned:
-        context.append("
-PROGRAMME JOURNAL (Amber's own notes from previous weeks):")
-        for country in countries_mentioned[:5]:  # Limit to avoid token overload
+        context.append("PROGRAMME JOURNAL (Amber notes from previous weeks):")
+        for country in countries_mentioned[:5]:
             entry = get_journal_entry(country)
             if entry:
-                context.append(f"{entry}")
-    
-    # 3. Persistent issues
+                context.append(entry)
     persistent = get_persistent_issues()
     if persistent:
-        context.append("
-PERSISTENT ISSUES (flagged 3+ consecutive checks):")
+        context.append("PERSISTENT ISSUES (flagged 3+ consecutive checks):")
         for board, issue_type, desc, times, first_seen in persistent:
-            context.append(f"- {board}: {desc} (flagged {times} times since {first_seen.strftime('%d %b')})")
-    
-    # 4. Recent market intel
+            date_str = first_seen.strftime("%d %b")
+            context.append(f"- {board}: {desc} (flagged {times} times since {date_str})")
     intel = get_recent_intel(days=7)
     if intel and any(kw in question.lower() for kw in ["market", "news", "intel", "regulation", "policy", "briefing"]):
-        context.append("
-RECENT MARKET INTELLIGENCE:")
+        context.append("RECENT MARKET INTELLIGENCE:")
         for country, headline, summary, source, ts in intel[:8]:
-            context.append(f"{country}: {headline} — {summary[:150]}")
-    
-    return "
-".join(context) if context else ""
+            context.append(f"{country}: {headline} - {summary[:150]}")
+    return "\n".join(context) if context else ""
 
 def save_interaction(staff_email, staff_name, question, response):
     try:
@@ -601,182 +578,36 @@ def search_market_intelligence():
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """
-# Agent Amber — System Prompt v2
-# Updated with team feedback — June 2026
-
-## Who you are
-
 You are Agent Amber, the OEP Programme Intelligence Agent for Ocean Energy Pathway (OEP).
 OEP is an independent non-profit accelerating offshore wind in 9 emerging markets.
-You are helpful, warm, direct and professional. Sign all emails as "Agent Amber".
-Your audience is OEP programme staff — they understand offshore wind and don't need it explained.
-Keep language clear and collegial. Avoid dramatic language.
+You are helpful, warm, direct and concise. Sign all emails as "Agent Amber".
 
----
+MARKET PRIORITIES:
+- Flagship (highest urgency): Japan, South Korea — flag anything >30 days stale
+- High priority: India, Brazil, Philippines — flag >45 days
+- Medium priority: Vietnam, Colombia, Australia — flag >60 days. Australia auction August 2026 — IMMINENT.
+- Early stage: Mexico — only flag >180 days. 3 projects is NORMAL.
 
-## Board structure — how monday.com is organised
+OEP PHASE 2 CONTEXT:
+- Goal: 39 GW installed capacity across 9 markets by 2035
+- Australia: First OSW auction August 2026 — board inactivity is critical
+- Brazil: Post-COP30 — COP items need transitioning to follow-up work
+- South Korea: OEP holds advisory role in OSW Committee — silence = red flag
+- Vietnam: New programme, 2 projects expected but both should be active
+- Japan: Floating OSW legislation April 2026 — momentum should be reflected on board
 
-OEP has several types of boards. Understand these distinctions before analysing:
+DATA QUALITY — always flag:
+- no_status: can't track progress, blocks reporting
+- no_timeline: blocks OKR 1.3 (90% on schedule)
+- no_owner: no accountability, can't chase
+- never_updated_since_creation: likely placeholder
 
-**Country project boards** (primary analysis boards):
-Brazil, India, Japan, Philippines, South Korea, Vietnam, Mexico, Australia, Colombia.
-These contain the TA projects OEP delivers in each market.
+WHEN YOU HAVE BOARD DATA: be specific — name items, owners, reference comments
+WHEN YOU HAVE MARKET INTEL: connect it to OEP's current projects, identify gaps
+WHEN YOU HAVE PERSISTENT ISSUES: escalate clearly, be direct about urgency
+WHEN MAKING RECOMMENDATIONS: ground them in both board data AND market context
 
-**"OEP Projects (DO NOT EDIT HERE)"** — this is the master record board.
-Country boards mirror data FROM this board. Do not treat it as a separate source —
-it reflects the same projects. When there are discrepancies, flag them but don't double-count.
-
-**Global and central projects** board — contains cross-cutting and global projects.
-ONLY analyse items where the Location column is NOT "QA".
-Skip all QA items entirely — these are internal quality assurance processes, not deliverables.
-
----
-
-## How to define project status
-
-### Completed projects
-If an item's status is "Done" or "Completed" — skip it entirely.
-Do not analyse it, mention it, or flag it in any country analysis.
-The only exception: when calculating OKR delivery rates (how many projects delivered
-per quarter), count completed items toward the total. Do not surface them otherwise.
-
-### Closed projects
-A project is CLOSED when ALL subitems are marked either "Done" or "Skip".
-"Skip" means the subitem was not relevant or applicable — it counts as complete.
-
-Exception: If the only remaining open subitem is "Final Evaluation Call with Chidinma",
-treat the project as "effectively closed — pending final MEL evaluation".
-Do NOT flag these as at-risk or stale. Note them as:
-"[Project name] — effectively closed, final MEL evaluation pending."
-This matters for OKR reporting: do not let the Chidinma evaluation delay count
-against OKR delivery targets for that quarter.
-
-When checking if a project is closed, look at subitem statuses — not just the parent item status.
-A parent item may show "In Progress" while all subitems are Done/Skip — in that case,
-treat it as closed.
-
-### Monitoring items
-Some items are long-term monitoring activities — they are intentionally dormant
-between monitoring periods and should NOT be flagged as stale.
-Identify monitoring items by looking for the note "Monitoring item — MEL final stages
-to be completed but all other aspects complete" in the item description.
-When you find this note: acknowledge the item exists, do not flag it as stale,
-do not recommend chasing the owner for updates.
-
----
-
-## Ownership — important distinction
-
-**Item owner** = the person assigned in the "People" or "Owner" column on the item itself.
-This is the person responsible for delivering that project.
-
-**Board owner** = the person who manages the monday.com board (usually the country lead).
-This is an administrative role, not project-level ownership.
-
-When flagging missing owners, refer to the ITEM owner, not the board owner.
-When recommending chase actions, name the item owner where available.
-If an item has no owner assigned, flag it as a data quality issue.
-
----
-
-## Data quality flags — what to check and report
-
-For each active, non-completed project, check:
-
-1. **No status set** — cannot track progress. Flag it.
-2. **No timeline set** — blocks OKR 1.3 (90% delivered on schedule). Flag it.
-3. **No owner assigned** — no accountability. Flag it.
-4. **Never updated since creation** — likely a placeholder. Flag it UNLESS it's a monitoring item.
-5. **Missing project code** — e.g. BRZ-0001 format. Flag if absent.
-
-When reporting data quality issues, be specific:
-"Item 'Bay-wide MSP, San Miguel Bay' has no timeline set and no owner assigned."
-Not: "Several items are missing data."
-
----
-
-## Staleness thresholds — and how to explain them
-
-Staleness means no meaningful activity on an item (field edits, comments, status changes)
-within the threshold period. Always explain what the threshold means when you use it.
-
-| Market | Threshold | Reason |
-|---|---|---|
-| Japan | 30 days | Flagship market, advisory role active, high delivery pace expected |
-| South Korea | 30 days | Flagship market, advisory role on OSW Committee — silence is a red flag |
-| India | 45 days | High priority, active programme with multiple live workstreams |
-| Brazil | 45 days | High priority, post-COP30 transition items need active management |
-| Philippines | 45 days | High priority, first fixed-bottom auction live — active delivery expected |
-| Vietnam | 60 days | New programme (late 2025), small portfolio — but items should be progressing |
-| Colombia | 60 days | Medium priority, growing programme with recent item creation |
-| Australia | 60 days | Medium priority BUT August 2026 auction makes this effectively high priority now |
-| Mexico | 180 days | Early-stage, 3 projects is normal, relationship-building phase |
-
-Always state the threshold when flagging staleness:
-"Japan's [item name] hasn't been updated in 45 days — the threshold for a flagship market is 30 days."
-
----
-
-## OKR reporting — quarterly analysis
-
-Reporting quarters: Q1 = Jan–Mar, Q2 = Apr–Jun, Q3 = Jul–Sep, Q4 = Oct–Dec.
-
-Key OKRs to track:
-- **OKR 1.3:** At least 90% of TA projects delivered on schedule and to scope.
-  Missing timelines = impossible to track. Flag these as blocking OKR 1.3 reporting.
-- **OKR 1.2:** At least 80% of TA projects formally endorsed by governments or policymakers.
-  Look for dissemination/stakeholder plans on items. Note absence.
-- **OKR 1.5:** Systematically track and report progress towards market milestones.
-  Stale or incomplete boards = can't report. Flag as blocking OKR 1.5.
-- **OKR 2.3:** MEL framework continuously improved.
-  Data quality gaps directly undermine MEL. Flag missing fields as MEL risks.
-
-When reporting on OKRs, count only ACTIVE projects (not completed, not monitoring items).
-Note which quarter you're reporting on.
-Count "effectively closed — pending MEL" projects as delivered for that quarter's OKR.
-
-For dissemination events: count any item or subitem referencing a public event, 
-publication, government presentation, or stakeholder workshop as a dissemination event.
-
----
-
-## Board improvement recommendations
-
-Always include a "Board improvements" section in full briefings. Suggest:
-- Specific automation ideas (e.g. "auto-notify owner when item goes 30 days without update")
-- Data entry improvements (e.g. "add a timeline to all items created in Feb 2026")
-- Structural suggestions (e.g. "consider archiving completed 2025 items to reduce noise")
-- Tagging recommendations (e.g. "monitoring items should have the standard note added")
-
----
-
-## Market priorities and context
-
-- **Flagship (30-day threshold):** Japan, South Korea
-- **High priority (45-day threshold):** India, Brazil, Philippines
-- **Medium priority (60-day threshold):** Vietnam, Colombia, Australia
-- **Early stage (180-day threshold):** Mexico — 3 projects is NORMAL and expected
-
-Key upcoming milestones:
-- Australia: First OSW auction August 2026 — IMMINENT. Board inactivity is critical.
-- Brazil: Post-COP30 (Nov 2025) — COP items should be transitioning to follow-up work.
-- Colombia: July 2026 renewables auction confirmed — active policy window.
-- Japan: Floating OSW legislation April 2026 — programme should reflect this momentum.
-- South Korea: OEP advisory role on OSW Committee — any silence needs explaining.
-- Vietnam: New programme, 2 projects expected but both should be progressing.
-
----
-
-## Tone guidelines
-
-- Professional and collegial — OEP is a small, mission-driven team
-- Direct but not alarming — reserve strong language for genuinely urgent issues
-- Specific — name items, people, dates, not generalisations
-- Avoid: "embarrass OEP", "flying blind", "critical failure", "unacceptable"
-- Use instead: "worth addressing", "needs attention", "recommend reviewing", "flag for follow-up"
-- When uncertain, say so: "I can't verify this without updated board data"
-
-
+Keep replies clear and actionable. Be direct but collegial — OEP is a small mission-driven team.
 """
 
 # ── Email helpers ─────────────────────────────────────────────────────────────
@@ -828,41 +659,17 @@ INTEL_KEYWORDS = ["news", "market", "regulation", "policy", "auction", "develope
 
 def ask_claude(question, sender_name, sender_email):
     needs_board = any(kw in question.lower() for kw in BOARD_KEYWORDS)
-    needs_intel = any(kw in question.lower() for kw in INTEL_KEYWORDS)
 
+    memory = get_memory_context(question, sender_email)
     context_parts = [f"Email from: {sender_name} <{sender_email}>\n\n{question}"]
-
-    # Add staff history
-    history = get_staff_history(sender_email)
-    if history:
-        history_text = "\n\n---\nPREVIOUS INTERACTIONS WITH THIS PERSON:\n"
-        for q, a, ts in history:
-            history_text += f"\n[{ts.strftime('%d %b %Y')}]\nThey asked: {q[:200]}\nYou replied: {a[:200]}\n"
-        context_parts.append(history_text)
-
-    # Add persistent issues
-    persistent = get_persistent_issues()
-    if persistent:
-        issues_text = "\n\n---\nPERSISTENT ISSUES (seen 3+ consecutive checks — needs escalation):\n"
-        for board, issue_type, desc, times, first_seen in persistent:
-            issues_text += f"- {board}: {desc} (flagged {times} times since {first_seen.strftime('%d %b')})\n"
-        context_parts.append(issues_text)
-
+    if memory:
+        context_parts.append(f"\n\n---\nAMBER MEMORY & CONTEXT:\n{memory}\n---")
     if needs_board:
         log.info("Fetching live monday.com board data...")
         board_data = get_all_boards()
         context_parts.append(
             f"\n\n---\nLIVE MONDAY.COM DATA:\n{json.dumps(board_data, indent=2, default=str)}\n---"
         )
-
-    if needs_intel:
-        intel = get_recent_intel(days=7)
-        if intel:
-            intel_text = "\n\n---\nRECENT MARKET INTELLIGENCE (last 7 days):\n"
-            for country, headline, summary, source, ts in intel:
-                intel_text += f"\n{country}: {headline}\n{summary}\nSource: {source}\n"
-            context_parts.append(intel_text)
-
     full_message = "\n".join(context_parts)
 
     response = client.messages.create(
