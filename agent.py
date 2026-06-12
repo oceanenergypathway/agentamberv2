@@ -291,7 +291,7 @@ def get_board_deep(board_id, board_name):
         {{
           boards(ids: [{board_id}]) {{
             name
-            items_page(limit: 100) {{
+            items_page(limit: 50) {{
               items {{
                 id
                 name
@@ -300,15 +300,10 @@ def get_board_deep(board_id, board_name):
                 updated_at
                 creator {{ name }}
                 column_values {{ id text value }}
-                updates(limit: 3) {{
+                updates(limit: 2) {{
                   body
                   created_at
                   creator {{ name }}
-                }}
-                subitems {{
-                  id
-                  name
-                  updated_at
                 }}
               }}
             }}
@@ -319,7 +314,7 @@ def get_board_deep(board_id, board_name):
         activity_result = monday_query(f"""
         {{
           boards(ids: [{board_id}]) {{
-            activity_logs(limit: 50) {{
+            activity_logs(limit: 25) {{
               id
               event
               created_at
@@ -329,8 +324,15 @@ def get_board_deep(board_id, board_name):
         }}
         """)
 
-        items = items_result["data"]["boards"][0]["items_page"]["items"]
-        activity_logs = activity_result["data"]["boards"][0].get("activity_logs", [])
+        board_data = items_result.get("data", {})
+        boards = board_data.get("boards", [])
+        if not boards:
+            return {"board": board_name, "error": "No board data returned"}
+        items = boards[0].get("items_page", {}).get("items", [])
+        
+        activity_board_data = activity_result.get("data", {})
+        activity_boards = activity_board_data.get("boards", [])
+        activity_logs = activity_boards[0].get("activity_logs", []) if activity_boards else []
         now = datetime.now(timezone.utc)
 
         processed_items = []
@@ -349,15 +351,6 @@ def get_board_deep(board_id, board_name):
                     "days_ago": days_ago(latest.get("created_at"))
                 }
             subitem_activity = None
-            if item.get("subitems"):
-                most_recent_sub = min(
-                    item["subitems"],
-                    key=lambda s: days_ago(s.get("updated_at")) or 999
-                )
-                subitem_activity = {
-                    "count": len(item["subitems"]),
-                    "most_recent_days_ago": days_ago(most_recent_sub.get("updated_at"))
-                }
             flags = []
             if not cols.get("status") and not cols.get("color"):
                 flags.append("no_status")
