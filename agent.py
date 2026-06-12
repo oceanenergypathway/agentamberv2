@@ -414,7 +414,27 @@ def get_board_deep(board_id, board_name):
                 continue
             item_updated = days_ago(item.get("updated_at"))
             item_created = days_ago(item.get("created_at"))
-            cols = {cv["id"]: cv["text"] for cv in item.get("column_values", []) if cv.get("text")}
+            # Extract column values - check both ID and title since OEP uses mirror columns
+            cols_by_id = {cv["id"]: cv["text"] for cv in item.get("column_values", []) if cv.get("text")}
+            cols_by_title = {}
+            for cv in item.get("column_values", []):
+                if cv.get("text"):
+                    # Normalise title to lowercase for matching
+                    title = cv.get("id", "").lower()
+                    cols_by_title[title] = cv["text"]
+            
+            def get_col(*keys):
+                """Try multiple key variations to find a column value."""
+                for key in keys:
+                    # Try exact ID match
+                    if key in cols_by_id:
+                        return cols_by_id[key]
+                    # Try partial ID match (e.g. "status" matches "status_mkm0ysah")
+                    for col_id, val in cols_by_id.items():
+                        if col_id.startswith(key + "_") or col_id == key:
+                            return val
+                return ""
+            
             latest_comment = None
             if item.get("updates"):
                 latest = item["updates"][0]
@@ -456,24 +476,36 @@ def get_board_deep(board_id, board_name):
                     "effectively_closed": effectively_closed,
                     "open_subitems": open_subitems[:3]
                 }
+            status_val = get_col("status", "color", "status_mkm0ysah")
+            timeline_val = get_col("timeline", "date", "timeline_mkm0rfpt")
+            owner_val = get_col("oep_lead", "person", "people", "oep_lead_mkm0vykk")
+            budget_val = get_col("budget", "budget_mkm0gdf7")
+            funder_val = get_col("funder", "funder_mkm0grx3")
+            
             flags = []
-            if not cols.get("status") and not cols.get("color"):
+            if not status_val:
                 flags.append("no_status")
-            if not cols.get("timeline") and not cols.get("date"):
+            if not timeline_val:
                 flags.append("no_timeline")
-            if not cols.get("person") and not cols.get("people"):
+            if not owner_val:
                 flags.append("no_owner")
             if item_created and item_updated and item_created > 30 and abs(item_created - item_updated) < 2:
                 flags.append("never_updated_since_creation")
+
+            # Skip completed items from active analysis
+            is_status_complete = status_val.lower() in ["done", "completed", "complete"] if status_val else False
 
             processed_items.append({
                 "name": item["name"],
                 "id": item["id"],
                 "created_days_ago": item_created,
                 "updated_days_ago": item_updated,
-                "status": cols.get("status") or cols.get("color") or "not set",
-                "timeline": cols.get("timeline") or cols.get("date") or "not set",
-                "owner": cols.get("person") or cols.get("people") or "not assigned",
+                "status": status_val or "not set",
+                "timeline": timeline_val or "not set",
+                "owner": owner_val or "not assigned",
+                "budget": budget_val or "not set",
+                "funder": funder_val or "not set",
+                "status_is_complete": is_status_complete,
                 "creator": item.get("creator", {}).get("name", "unknown"),
                 "latest_comment": latest_comment,
                 "subitems": subitem_activity,
@@ -502,10 +534,10 @@ def get_board_deep(board_id, board_name):
         # Separate active from closed items
         active_items = [i for i in processed_items 
                        if not i.get("is_closed") and not i.get("effectively_closed")
-                       and i.get("status", "").lower() not in ["done", "completed", "complete"]]
+                       and not i.get("status_is_complete", False)]
         closed_items = [i for i in processed_items 
                        if i.get("is_closed") or i.get("effectively_closed")
-                       or i.get("status", "").lower() in ["done", "completed", "complete"]]
+                       or i.get("status_is_complete", False)]
         
         total = len(processed_items)
         active_count = len(active_items)
