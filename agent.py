@@ -40,8 +40,10 @@ POLL_INTERVAL  = int(os.environ.get("POLL_INTERVAL", "120"))
 AGENT_NAME     = "Agent Amber"
 OEP_DOMAIN     = "oceanenergypathway.org"
 
-# Google Drive (optional - gracefully disabled if not configured)
-GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS", "")
+# Google Drive OAuth (optional - gracefully disabled if not configured)
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
 
 client = Anthropic()
 pending_approvals = {}
@@ -253,18 +255,27 @@ _drive_service = None
 
 def get_drive_service():
     global _drive_service
-    if _drive_service or not GOOGLE_CREDENTIALS:
+    if _drive_service:
         return _drive_service
+    if not GOOGLE_CLIENT_ID or not GOOGLE_REFRESH_TOKEN:
+        return None
     try:
-        import google.oauth2.service_account as sa
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
         import googleapiclient.discovery as discovery
-        creds_dict = json.loads(GOOGLE_CREDENTIALS)
-        creds = sa.Credentials.from_service_account_info(
-            creds_dict,
+
+        creds = Credentials(
+            token=None,
+            refresh_token=GOOGLE_REFRESH_TOKEN,
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            token_uri="https://oauth2.googleapis.com/token",
             scopes=["https://www.googleapis.com/auth/drive.readonly"]
         )
+        # Refresh to get a valid access token
+        creds.refresh(Request())
         _drive_service = discovery.build("drive", "v3", credentials=creds)
-        log.info("Google Drive connected")
+        log.info("Google Drive connected via OAuth")
     except Exception as e:
         log.warning(f"Google Drive not available: {e}")
     return _drive_service
@@ -1075,7 +1086,7 @@ if __name__ == "__main__":
     log.info(f"Watching:  {AGENT_EMAIL}")
     log.info(f"Approver:  {APPROVER_EMAIL}")
     log.info(f"Domain:    @{OEP_DOMAIN}")
-    log.info(f"Drive:     {'connected' if GOOGLE_CREDENTIALS else 'not configured'}")
+    log.info(f"Drive:     {'connected' if GOOGLE_CLIENT_ID else 'not configured'}")
 
     init_db()
 
