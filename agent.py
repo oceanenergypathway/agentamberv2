@@ -777,7 +777,10 @@ DATA QUALITY — flag per item:
 TONE: Professional, collegial, specific. Avoid dramatic language.
 Always include a "Board improvements" section in full briefings.
 
-When you have enough information, call the finish tool with your complete response.
+When you have enough information, call the finish tool with your COMPLETE response.
+CRITICAL: The text you put in the finish tool IS the email that gets sent. 
+Do NOT say "I now have everything I need" or "Let me write the briefing" — write the actual briefing IN the finish tool.
+Do NOT use finish as a placeholder. The finish tool content = the email content. Write it all there.
 """
 
 def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
