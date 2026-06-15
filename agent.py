@@ -603,7 +603,6 @@ def execute_tool(tool_name, tool_input):
                   id
                   event
                   created_at
-                  user {{ name }}
                   data
                 }}
               }}
@@ -1024,7 +1023,9 @@ def run_scheduled_tasks():
     now = datetime.now(timezone.utc)
     if should_run("last_daily_search", 24) and now.hour >= 6:
         run_daily_search()
-    if now.weekday() == 0 and should_run("last_weekly_briefing", 144):
+    # Monday briefing at 8am UK time (UTC+1 in summer, UTC in winter)
+    # Use UTC 7am as a safe threshold that covers both GMT and BST
+    if now.weekday() == 0 and now.hour >= 7 and now.hour < 9 and should_run("last_weekly_briefing", 144):
         run_weekly_briefing()
 
 # ── Main inbox loop ───────────────────────────────────────────────────────────
