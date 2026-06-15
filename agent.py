@@ -818,6 +818,9 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
     
     for iteration in range(max_iterations):
         log.info(f"Agentic loop iteration {iteration + 1}")
+        # Force finish on last iteration
+        if iteration == max_iterations - 2:
+            messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "forced", "content": "IMPORTANT: You must call the finish tool NOW with your complete response. Do not make any more tool calls."}]})
         
         response = client.messages.create(
             model="claude-sonnet-4-6",
