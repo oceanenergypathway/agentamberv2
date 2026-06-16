@@ -424,6 +424,19 @@ TOOLS = [
         }
     },
     {
+        "name": "read_slack_channel",
+        "description": "Read recent messages from a Slack channel Amber has been invited to. Use this to understand what the team is discussing, find context about projects, or answer questions about conversations. Returns the last N messages with sender names and timestamps.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {"type": "string", "description": "Channel name e.g. '#general', '#japan', '#programme' — or 'all' to get a summary across all channels"},
+                "hours": {"type": "integer", "description": "How many hours back to look (default 48)", "default": 48},
+                "limit": {"type": "integer", "description": "Max messages to return (default 30)", "default": 30}
+            },
+            "required": ["channel_name"]
+        }
+    },
+    {
         "name": "finish",
         "description": "Call this when you are ready to send your response. The 'response' field IS the email that gets sent immediately. Write the COMPLETE email content here — do not summarise what you are about to write, do not say 'let me compile this now', do not use this as a placeholder. The full briefing, analysis, or answer goes directly in the response field. This is the last tool you call.",
         "input_schema": {
@@ -728,6 +741,80 @@ def execute_tool(tool_name, tool_input):
     elif tool_name == "flag_issue":
         track_issue(tool_input["board"], tool_input["issue_type"], tool_input["description"])
         return f"Issue flagged: {tool_input['board']} — {tool_input['description']}"
+
+    elif tool_name == "read_slack_channel":
+        if not SLACK_BOT_TOKEN:
+            return "Slack is not configured."
+        channel_name = tool_input.get("channel_name", "all")
+        hours = tool_input.get("hours", 48)
+        limit = tool_input.get("limit", 30)
+        oldest = str((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
+
+        # Get bot user ID for name resolution
+        auth = slack_get("auth.test", {})
+        bot_user_id = auth.get("user_id", "") if auth else ""
+
+        # Build user ID -> name cache
+        users_result = slack_get("users.list", {"limit": 200})
+        user_map = {}
+        if users_result and users_result.get("ok"):
+            for u in users_result.get("members", []):
+                user_map[u["id"]] = u.get("real_name") or u.get("name", u["id"])
+
+        # Get channels
+        channels_result = slack_get("conversations.list", {
+            "types": "public_channel",
+            "exclude_archived": "true",
+            "limit": 100
+        })
+        if not channels_result or not channels_result.get("ok"):
+            return "Could not retrieve Slack channels."
+
+        channels = [c for c in channels_result.get("channels", []) if c.get("is_member")]
+
+        # Filter to requested channel or all
+        if channel_name != "all":
+            clean = channel_name.lstrip("#").lower()
+            channels = [c for c in channels if c["name"].lower() == clean]
+            if not channels:
+                return f"Channel #{clean} not found or Amber hasn't been invited to it."
+
+        all_messages = []
+        for ch in channels:
+            result = slack_get("conversations.history", {
+                "channel": ch["id"],
+                "oldest": oldest,
+                "limit": limit
+            })
+            if not result or not result.get("ok"):
+                continue
+            for msg in result.get("messages", []):
+                if msg.get("bot_id") or msg.get("subtype"):
+                    continue
+                user_id = msg.get("user", "")
+                if user_id == bot_user_id:
+                    continue
+                name = user_map.get(user_id, user_id)
+                ts = float(msg.get("ts", 0))
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%a %d %b %H:%M")
+                text = msg.get("text", "").strip()
+                if text:
+                    all_messages.append({
+                        "channel": ch["name"],
+                        "time": dt,
+                        "name": name,
+                        "text": text[:300]
+                    })
+
+        if not all_messages:
+            return f"No messages found in the last {hours} hours."
+
+        # Sort by time
+        all_messages.sort(key=lambda x: x["time"])
+
+        lines = [f"[#{m['channel']}] {m['time']} — {m['name']}: {m['text']}" for m in all_messages]
+        return f"Found {len(lines)} messages:\n\n" + "\n".join(lines)
+
 
     elif tool_name == "finish":
         return "__FINISH__"
@@ -1253,6 +1340,132 @@ def slack_post(channel, text):
     else:
         log.error(f"Slack post failed: {result}")
 
+
+def slack_get(method, params):
+    """Call a Slack API GET method."""
+    if not SLACK_BOT_TOKEN:
+        return None
+    query = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        f"https://slack.com/api/{method}?{query}",
+        headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        return json.loads(resp.read())
+    except Exception as e:
+        log.error(f"Slack GET error ({method}): {e}")
+        return None
+
+def is_question(text):
+    """Detect if a message is asking a question."""
+    text_lower = text.lower().strip()
+    # Remove @mentions
+    text_clean = re.sub(r'<@[A-Z0-9]+>', '', text_lower).strip()
+    if not text_clean:
+        return False
+    question_words = ['what', 'when', 'where', 'who', 'why', 'how', 'which',
+                      'can ', 'could ', 'should ', 'would ', 'is there', 'are there',
+                      'do we', 'does ', 'did ', 'has ', 'have we', 'will ']
+    if text_clean.endswith('?'):
+        return True
+    if any(text_clean.startswith(w) for w in question_words):
+        return True
+    return False
+
+def get_joined_channels():
+    """Get list of channels Amber has been invited to."""
+    result = slack_get("conversations.list", {
+        "types": "public_channel",
+        "exclude_archived": "true",
+        "limit": 100
+    })
+    if not result or not result.get("ok"):
+        return []
+    return [c["id"] for c in result.get("channels", []) if c.get("is_member")]
+
+def scan_slack_channels():
+    """Scan channels for unanswered questions and respond."""
+    if not SLACK_BOT_TOKEN:
+        return
+    
+    # Track which messages we've already responded to
+    responded_key = "slack_responded_ts"
+    responded_raw = recall("slack", responded_key) or "{}"
+    try:
+        responded = json.loads(responded_raw)
+    except:
+        responded = {}
+
+    # Get bot's own user ID so we don't respond to ourselves
+    auth = slack_get("auth.test", {})
+    bot_user_id = auth.get("user_id", "") if auth else ""
+
+    channels = get_joined_channels()
+    log.info(f"Scanning {len(channels)} Slack channels for questions")
+
+    # Only look at messages from the last 10 minutes
+    oldest = str((datetime.now(timezone.utc) - timedelta(minutes=10)).timestamp())
+
+    for channel_id in channels:
+        try:
+            result = slack_get("conversations.history", {
+                "channel": channel_id,
+                "oldest": oldest,
+                "limit": 20
+            })
+            if not result or not result.get("ok"):
+                continue
+
+            messages = result.get("messages", [])
+            for msg in messages:
+                ts = msg.get("ts", "")
+                text = msg.get("text", "")
+                user = msg.get("user", "")
+
+                # Skip our own messages, bots, already responded
+                if user == bot_user_id:
+                    continue
+                if msg.get("bot_id"):
+                    continue
+                if responded.get(ts):
+                    continue
+                # Skip if already has a reply from Amber in thread
+                if msg.get("reply_count", 0) > 0:
+                    responded[ts] = True
+                    continue
+
+                if is_question(text):
+                    log.info(f"Question detected in channel {channel_id}: {text[:80]}")
+                    responded[ts] = True
+
+                    def handle_question(ch=channel_id, t=text, u=user, thread_ts=ts):
+                        response = run_agentic_loop(
+                            t,
+                            f"Slack user {u}",
+                            f"slack_{u}@{OEP_DOMAIN}"
+                        )
+                        slack_mrkdwn = re.sub(r'\*\*(.+?)\*\*', r'*\1*', response)
+                        # Reply in thread
+                        slack_api("chat.postMessage", {
+                            "channel": ch,
+                            "text": slack_mrkdwn,
+                            "thread_ts": thread_ts,
+                            "mrkdwn": True
+                        })
+
+                    t = threading.Thread(target=handle_question)
+                    t.daemon = True
+                    t.start()
+
+        except Exception as e:
+            log.error(f"Error scanning channel {channel_id}: {e}")
+
+    # Save responded set (keep last 500 entries to avoid bloat)
+    if len(responded) > 500:
+        responded = dict(list(responded.items())[-500:])
+    remember("slack", responded_key, json.dumps(responded))
+
 def verify_slack_signature(body, timestamp, signature):
     """Verify the request came from Slack."""
     if not SLACK_SIGNING_SECRET:
@@ -1350,6 +1563,152 @@ def start_slack_server():
         log.error(f"Slack server failed to start: {e}")
 
 
+
+def run_proactive_intelligence():
+    """Scan all sources and decide if anything is worth flagging to Paul proactively."""
+    if not SLACK_BOT_TOKEN:
+        return
+
+    # Max 3 proactive emails per day
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    count_key = f"proactive_count_{today}"
+    count = int(recall("proactive", count_key) or "0")
+    if count >= 3:
+        log.info("Proactive email limit reached for today (3/3)")
+        return
+
+    log.info("Running proactive intelligence scan...")
+
+    # Gather Slack context from last 6 hours across all channels
+    hours = 6
+    oldest = str((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
+
+    auth = slack_get("auth.test", {})
+    bot_user_id = auth.get("user_id", "") if auth else ""
+
+    users_result = slack_get("users.list", {"limit": 200})
+    user_map = {}
+    if users_result and users_result.get("ok"):
+        for u in users_result.get("members", []):
+            user_map[u["id"]] = u.get("real_name") or u.get("name", u["id"])
+
+    channels_result = slack_get("conversations.list", {
+        "types": "public_channel", "exclude_archived": "true", "limit": 100
+    })
+    if not channels_result or not channels_result.get("ok"):
+        return
+
+    channels = [c for c in channels_result.get("channels", []) if c.get("is_member")]
+    slack_digest = []
+    for ch in channels:
+        result = slack_get("conversations.history", {
+            "channel": ch["id"], "oldest": oldest, "limit": 30
+        })
+        if not result or not result.get("ok"):
+            continue
+        for msg in result.get("messages", []):
+            if msg.get("bot_id") or msg.get("subtype"):
+                continue
+            uid = msg.get("user", "")
+            if uid == bot_user_id:
+                continue
+            name = user_map.get(uid, uid)
+            text = msg.get("text", "").strip()
+            if text:
+                slack_digest.append(f"[#{ch['name']}] {name}: {text[:200]}")
+
+    if not slack_digest:
+        log.info("No Slack activity in last 6 hours — skipping proactive scan")
+        return
+
+    # Get already-flagged insights to avoid repeating
+    already_flagged = recall("proactive", "flagged_summaries") or ""
+
+    slack_text = "\n".join(slack_digest[:60])  # cap to avoid token overload
+
+    prompt = f"""You are Agent Amber, an intelligent assistant for Ocean Energy Pathway (OEP).
+
+Below is a digest of Slack conversations from the last 6 hours across OEP channels.
+
+Your job: read this carefully and decide if there is anything genuinely worth flagging proactively to Paul (the CEO). 
+
+Flag things like:
+- A team member seems blocked, frustrated, or struggling to get traction
+- A relationship or collaboration seems strained
+- A project or country workstream seems at risk
+- An opportunity is being discussed that Paul should be aware of
+- A decision is being delayed that needs his input
+- Any pattern suggesting something needs leadership attention
+
+Do NOT flag:
+- Normal day-to-day work updates
+- Things already resolved in the conversation
+- Minor admin matters
+
+Recent Slack activity:
+{slack_text}
+
+Previously flagged (don't repeat these): {already_flagged[:500]}
+
+Respond in JSON only:
+{{
+  "worth_flagging": true/false,
+  "insight": "One clear sentence describing what you spotted",
+  "detail": "2-3 sentences of context and why Paul should care",
+  "suggested_action": "One concrete suggestion for what Paul might do"
+}}"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.content[0].text.strip()
+        # Strip markdown fences if present
+        raw = re.sub(r"^```json|^```|```$", "", raw, flags=re.MULTILINE).strip()
+        result = json.loads(raw)
+
+        if not result.get("worth_flagging"):
+            log.info("Proactive scan: nothing worth flagging")
+            return
+
+        insight = result.get("insight", "")
+        detail = result.get("detail", "")
+        action = result.get("suggested_action", "")
+
+        # Check we haven't flagged something very similar recently
+        if insight[:50] in already_flagged:
+            log.info(f"Proactive scan: already flagged similar insight, skipping")
+            return
+
+        # Send proactive email to Paul
+        subject = f"[Amber] {insight}"
+        body = f"""Hi Paul,
+
+I wanted to flag something I noticed from recent Slack activity:
+
+**{insight}**
+
+{detail}
+
+**Suggested action:** {action}
+
+This is an automated insight from my monitoring of OEP channels. Reply if you'd like me to dig deeper.
+
+— Amber"""
+
+        send_email(APPROVER_EMAIL, subject, body)
+        log.info(f"Proactive email sent: {insight}")
+
+        # Update count and memory
+        remember("proactive", count_key, str(count + 1))
+        new_flagged = (already_flagged + " | " + insight)[-1000:]
+        remember("proactive", "flagged_summaries", new_flagged)
+
+    except Exception as e:
+        log.error(f"Proactive intelligence error: {e}")
+
 if __name__ == "__main__":
     log.info(f"Agent Amber v11 starting — polling every {POLL_INTERVAL}s")
     log.info(f"Watching:  {AGENT_EMAIL}")
@@ -1360,10 +1719,22 @@ if __name__ == "__main__":
     init_db()
     start_slack_server()
 
+    slack_scan_counter = 0
+    proactive_counter = 0
     while True:
         try:
             run_scheduled_tasks()
             check_inbox()
+            # Scan Slack for questions every ~5 minutes
+            slack_scan_counter += 1
+            if slack_scan_counter >= 3:
+                scan_slack_channels()
+                slack_scan_counter = 0
+            # Proactive intelligence scan every ~4 hours
+            proactive_counter += 1
+            if proactive_counter >= 120:
+                run_proactive_intelligence()
+                proactive_counter = 0
         except Exception as e:
             log.error(f"Main loop error: {e}")
         time.sleep(POLL_INTERVAL)
