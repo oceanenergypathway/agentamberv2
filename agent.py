@@ -1262,7 +1262,7 @@ def verify_slack_signature(body, timestamp, signature):
         SLACK_SIGNING_SECRET.encode(),
         sig_basestring.encode(),
         hashlib.sha256
-    ).hexdigest()
+    ).hexdigest()  # hmac.new is correct Python stdlib
     return hmac.compare_digest(computed, signature)
 
 class SlackHandler(BaseHTTPRequestHandler):
@@ -1282,16 +1282,23 @@ class SlackHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         
-        self.send_response(200)
-        self.end_headers()
-        
         try:
             payload = json.loads(body)
             
-            # URL verification challenge
+            # URL verification challenge — must respond with JSON before end_headers
             if payload.get("type") == "url_verification":
-                self.wfile.write(payload["challenge"].encode())
+                challenge = payload["challenge"]
+                response_body = json.dumps({"challenge": challenge}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response_body)))
+                self.end_headers()
+                self.wfile.write(response_body)
+                log.info("Slack URL verification challenge answered")
                 return
+            
+            self.send_response(200)
+            self.end_headers()
             
             # Handle events
             event = payload.get("event", {})
@@ -1316,7 +1323,7 @@ class SlackHandler(BaseHTTPRequestHandler):
                         f"slack_{user}@{OEP_DOMAIN}"
                     )
                     # Convert to Slack markdown
-                    slack_response = re.sub(r'\*\*(.+?)\*\*', r'**', response)
+                    slack_response = re.sub(r'\*\*(.+?)\*\*', r'*\1*', response)
                     slack_post(channel, slack_response)
                 
                 thread = threading.Thread(target=handle_mention)
