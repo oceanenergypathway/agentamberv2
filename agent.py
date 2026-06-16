@@ -1164,9 +1164,12 @@ def check_inbox():
                 if handle_approval(body, sender_subject):
                     continue
 
-            # Only respond to OEP staff
-            if not is_internal(sender_email):
-                log.info(f"Ignoring non-OEP email from {sender_email}")
+            # Only respond to authorised senders
+            AUTHORISED_SENDERS = [
+                "paul@oceanenergypathway.org",
+            ]
+            if sender_email.lower() not in [s.lower() for s in AUTHORISED_SENDERS]:
+                log.info(f"Ignoring unauthorised email from {sender_email}")
                 continue
 
             # Run agentic loop
