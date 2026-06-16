@@ -1273,19 +1273,10 @@ class SlackHandler(BaseHTTPRequestHandler):
         body_bytes = self.rfile.read(content_length)
         body = body_bytes.decode("utf-8")
         
-        # Verify signature
-        timestamp = self.headers.get("X-Slack-Request-Timestamp", "")
-        signature = self.headers.get("X-Slack-Signature", "")
-        
-        if not verify_slack_signature(body, timestamp, signature):
-            self.send_response(403)
-            self.end_headers()
-            return
-        
         try:
             payload = json.loads(body)
             
-            # URL verification challenge — must respond with JSON before end_headers
+            # URL verification — skip signature check, respond immediately
             if payload.get("type") == "url_verification":
                 challenge = payload["challenge"]
                 response_body = json.dumps({"challenge": challenge}).encode("utf-8")
@@ -1295,6 +1286,14 @@ class SlackHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(response_body)
                 log.info("Slack URL verification challenge answered")
+                return
+            
+            # Verify signature for all real events
+            timestamp = self.headers.get("X-Slack-Request-Timestamp", "")
+            signature = self.headers.get("X-Slack-Signature", "")
+            if not verify_slack_signature(body, timestamp, signature):
+                self.send_response(403)
+                self.end_headers()
                 return
             
             self.send_response(200)
