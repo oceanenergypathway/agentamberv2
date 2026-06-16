@@ -417,11 +417,11 @@ TOOLS = [
     },
     {
         "name": "finish",
-        "description": "You have enough information. Write your final response and finish.",
+        "description": "Call this when you are ready to send your response. The 'response' field IS the email that gets sent immediately. Write the COMPLETE email content here — do not summarise what you are about to write, do not say 'let me compile this now', do not use this as a placeholder. The full briefing, analysis, or answer goes directly in the response field. This is the last tool you call.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "response": {"type": "string", "description": "Your complete response to send"}
+                "response": {"type": "string", "description": "The complete email content to send. Must be the full response, not a placeholder or summary of what you will write."}
             },
             "required": ["response"]
         }
