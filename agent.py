@@ -904,12 +904,105 @@ def get_body(msg):
         return msg.get_payload(decode=True).decode("utf-8", errors="replace")
     return ""
 
+import re
+
+def format_html_email(text):
+    """Convert Amber's markdown-style text into a rich HTML email."""
+    lines = text.split("\n")
+    html_parts = []
+    
+    header = """<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:700px;margin:0 auto;background:#ffffff;"><div style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:30px;border-radius:12px 12px 0 0;"><table><tr><td style="width:44px;height:44px;background:#f59e0b;border-radius:50%;text-align:center;font-size:20px;">&#127810;</td><td style="padding-left:12px;"><div style="color:#f59e0b;font-size:18px;font-weight:700;">Agent Amber</div><div style="color:#94a3b8;font-size:12px;">OEP Programme Intelligence</div></td></tr></table></div><div style="padding:24px;background:#f8fafc;">"""
+    html_parts.append(header)
+    
+    in_list = False
+    list_type = "ul"
+    
+    FLAGS = {"JAPAN":"&#127471;&#127477;","SOUTH KOREA":"&#127472;&#127479;","INDIA":"&#127470;&#127475;",
+             "BRAZIL":"&#127463;&#127479;","PHILIPPINES":"&#127477;&#127469;","VIETNAM":"&#127483;&#127475;",
+             "MEXICO":"&#127474;&#127485;","AUSTRALIA":"&#127462;&#127482;","COLOMBIA":"&#127464;&#127476;"}
+    
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            html_parts.append(f"</{list_type}>")
+            in_list = False
+    
+    def apply_inline(s):
+        s = s.replace("🔴", '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128308; CRITICAL</span>')
+        s = s.replace("🟠", '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128992; ATTENTION</span>')
+        s = s.replace("🟡", '<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128993; MONITOR</span>')
+        s = s.replace("🟢", '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128994; HEALTHY</span>')
+        s = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', s)
+        s = re.sub(r'\*(.+?)\*', r'<em>\1</em>', s)
+        return s
+    
+    for line in lines:
+        line = line.rstrip()
+        
+        if not line:
+            close_list()
+            html_parts.append('<div style="height:8px;"></div>')
+            continue
+        
+        if line.startswith("# "):
+            close_list()
+            html_parts.append(f'<h1 style="font-size:22px;font-weight:700;color:#0f172a;margin:24px 0 12px;padding-bottom:8px;border-bottom:2px solid #e2e8f0;">{apply_inline(line[2:])}</h1>')
+        
+        elif line.startswith("## "):
+            close_list()
+            title = line[3:]
+            flag = ""
+            for country, f in FLAGS.items():
+                if country in title.upper():
+                    flag = f + " "
+                    break
+            html_parts.append(f'<div style="background:white;border-radius:8px;padding:16px 20px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,0.08);border-left:4px solid #f59e0b;"><h2 style="font-size:16px;font-weight:700;color:#0f172a;margin:0;">{flag}{apply_inline(title)}</h2></div>')
+        
+        elif line.startswith("### "):
+            close_list()
+            html_parts.append(f'<h3 style="font-size:14px;font-weight:600;color:#334155;margin:16px 0 8px;">{apply_inline(line[4:])}</h3>')
+        
+        elif line.startswith("---"):
+            close_list()
+            html_parts.append('<hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;">')
+        
+        elif line.startswith("- ") or line.startswith("* "):
+            if not in_list:
+                html_parts.append('<ul style="margin:8px 0;padding-left:20px;">')
+                in_list = True
+                list_type = "ul"
+            html_parts.append(f'<li style="color:#475569;font-size:14px;margin:4px 0;line-height:1.6;">{apply_inline(line[2:])}</li>')
+        
+        elif re.match(r'^\d+\.', line):
+            if not in_list:
+                html_parts.append('<ol style="margin:8px 0;padding-left:20px;">')
+                in_list = True
+                list_type = "ol"
+            item = re.sub(r'^\d+\.\s*', '', line)
+            html_parts.append(f'<li style="color:#475569;font-size:14px;margin:4px 0;line-height:1.6;">{apply_inline(item)}</li>')
+        
+        else:
+            close_list()
+            html_parts.append(f'<p style="color:#475569;font-size:14px;line-height:1.7;margin:6px 0;">{apply_inline(line)}</p>')
+    
+    close_list()
+    
+    footer = """<div style="margin-top:24px;padding:16px;background:#f1f5f9;border-radius:8px;border:1px solid #e2e8f0;text-align:center;"><p style="color:#94a3b8;font-size:12px;margin:0;">Agent Amber &mdash; OEP Programme Intelligence | <a href="mailto:oepagent@oceanenergypathway.org" style="color:#f59e0b;">oepagent@oceanenergypathway.org</a></p></div></div></div>"""
+    html_parts.append(footer)
+    
+    return "\n".join(html_parts)
+
+
 def send_email(to, subject, body, from_name=None):
+    html_body = format_html_email(body)
     data = json.dumps({
         "personalizations": [{"to": [{"email": to}]}],
         "from": {"email": AGENT_EMAIL, "name": from_name or AGENT_NAME},
         "subject": subject,
-        "content": [{"type": "text/plain", "value": body}]
+        "content": [
+            {"type": "text/plain", "value": body},
+            {"type": "text/html", "value": html_body}
+        ]
     }).encode("utf-8")
     req = urllib.request.Request(
         "https://api.sendgrid.com/v3/mail/send",
