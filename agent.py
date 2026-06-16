@@ -21,6 +21,10 @@ import logging
 import traceback
 import psycopg2
 import psycopg2.extras
+import hashlib
+import hmac
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 from email.header import decode_header
 from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
@@ -39,6 +43,10 @@ IMAP_SERVER    = os.environ.get("IMAP_SERVER", "imap.gmail.com")
 POLL_INTERVAL  = int(os.environ.get("POLL_INTERVAL", "120"))
 AGENT_NAME     = "Agent Amber"
 OEP_DOMAIN     = "oceanenergypathway.org"
+
+# Slack (optional - gracefully disabled if not configured)
+SLACK_BOT_TOKEN    = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 
 # Google Drive OAuth (optional - gracefully disabled if not configured)
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
@@ -1206,6 +1214,136 @@ def check_inbox():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+# ── Slack integration ────────────────────────────────────────────────────────
+
+def slack_api(method, payload):
+    """Call a Slack API method."""
+    if not SLACK_BOT_TOKEN:
+        return None
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://slack.com/api/{method}",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        return json.loads(resp.read())
+    except Exception as e:
+        log.error(f"Slack API error ({method}): {e}")
+        return None
+
+def slack_post(channel, text):
+    """Post a message to a Slack channel."""
+    html = format_html_email(text)
+    # Slack uses mrkdwn not HTML - convert key formatting
+    mrkdwn = text
+    mrkdwn = re.sub(r'\*\*(.+?)\*\*', r'*\1*', mrkdwn)
+    result = slack_api("chat.postMessage", {
+        "channel": channel,
+        "text": mrkdwn,
+        "mrkdwn": True
+    })
+    if result and result.get("ok"):
+        log.info(f"Slack message posted to {channel}")
+    else:
+        log.error(f"Slack post failed: {result}")
+
+def verify_slack_signature(body, timestamp, signature):
+    """Verify the request came from Slack."""
+    if not SLACK_SIGNING_SECRET:
+        return True
+    sig_basestring = f"v0:{timestamp}:{body}"
+    computed = "v0=" + hmac.new(
+        SLACK_SIGNING_SECRET.encode(),
+        sig_basestring.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(computed, signature)
+
+class SlackHandler(BaseHTTPRequestHandler):
+    """HTTP handler for Slack events."""
+    
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_bytes = self.rfile.read(content_length)
+        body = body_bytes.decode("utf-8")
+        
+        # Verify signature
+        timestamp = self.headers.get("X-Slack-Request-Timestamp", "")
+        signature = self.headers.get("X-Slack-Signature", "")
+        
+        if not verify_slack_signature(body, timestamp, signature):
+            self.send_response(403)
+            self.end_headers()
+            return
+        
+        self.send_response(200)
+        self.end_headers()
+        
+        try:
+            payload = json.loads(body)
+            
+            # URL verification challenge
+            if payload.get("type") == "url_verification":
+                self.wfile.write(payload["challenge"].encode())
+                return
+            
+            # Handle events
+            event = payload.get("event", {})
+            event_type = event.get("type")
+            
+            # Respond to @mentions
+            if event_type == "app_mention":
+                channel = event.get("channel")
+                user = event.get("user")
+                text = event.get("text", "")
+                
+                # Remove the @Amber mention from the text
+                text = re.sub(r'<@[A-Z0-9]+>', '', text).strip()
+                
+                log.info(f"Slack mention in {channel}: {text[:100]}")
+                
+                # Run in background thread so we return 200 quickly
+                def handle_mention():
+                    response = run_agentic_loop(
+                        text,
+                        f"Slack user {user}",
+                        f"slack_{user}@{OEP_DOMAIN}"
+                    )
+                    # Convert to Slack markdown
+                    slack_response = re.sub(r'\*\*(.+?)\*\*', r'**', response)
+                    slack_post(channel, slack_response)
+                
+                thread = threading.Thread(target=handle_mention)
+                thread.daemon = True
+                thread.start()
+                
+        except Exception as e:
+            log.error(f"Slack event handling error: {e}")
+    
+    def log_message(self, *args):
+        pass  # Suppress default HTTP logging
+
+def start_slack_server():
+    """Start the HTTP server for Slack events on port 8080."""
+    if not SLACK_BOT_TOKEN:
+        log.info("Slack not configured — skipping")
+        return
+    try:
+        server = HTTPServer(("0.0.0.0", 8080), SlackHandler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.daemon = True
+        thread.start()
+        log.info("Slack event server started on port 8080")
+    except Exception as e:
+        log.error(f"Slack server failed to start: {e}")
+
+
 if __name__ == "__main__":
     log.info(f"Agent Amber v11 starting — polling every {POLL_INTERVAL}s")
     log.info(f"Watching:  {AGENT_EMAIL}")
@@ -1214,6 +1352,7 @@ if __name__ == "__main__":
     log.info(f"Drive:     {'connected' if GOOGLE_CLIENT_ID else 'not configured'}")
 
     init_db()
+    start_slack_server()
 
     while True:
         try:
