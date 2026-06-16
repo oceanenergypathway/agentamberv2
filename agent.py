@@ -42,6 +42,7 @@ DATABASE_URL   = os.environ["DATABASE_URL"]
 IMAP_SERVER    = os.environ.get("IMAP_SERVER", "imap.gmail.com")
 POLL_INTERVAL  = int(os.environ.get("POLL_INTERVAL", "120"))
 AGENT_NAME     = "Agent Amber"
+PAUL_EMAIL     = os.environ.get("PAUL_EMAIL", "paul@oceanenergypathway.org")
 OEP_DOMAIN     = "oceanenergypathway.org"
 
 # Slack (optional - gracefully disabled if not configured)
@@ -424,6 +425,18 @@ TOOLS = [
         }
     },
     {
+        "name": "read_paul_inbox",
+        "description": "Read Paul's email inbox and return a summary of recent emails. ONLY available when responding to Paul (paul@oceanenergypathway.org) — never use this for any other sender. Use when Paul asks about his emails, wants a summary, asks what he's missed, or asks you to remind him of things.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hours": {"type": "integer", "description": "How many hours back to look (default 24)", "default": 24},
+                "focus": {"type": "string", "description": "Optional: what to focus on e.g. 'unread only', 'from a specific person'"}
+            },
+            "required": []
+        }
+    },
+    {
         "name": "read_slack_channel",
         "description": "Read recent messages from a Slack channel Amber has been invited to. Use this to understand what the team is discussing, find context about projects, or answer questions about conversations. Returns the last N messages with sender names and timestamps.",
         "input_schema": {
@@ -742,6 +755,15 @@ def execute_tool(tool_name, tool_input):
         track_issue(tool_input["board"], tool_input["issue_type"], tool_input["description"])
         return f"Issue flagged: {tool_input['board']} — {tool_input['description']}"
 
+    elif tool_name == "read_paul_inbox":
+        # Security gate — only Paul can use this tool
+        sender_email = tool_input.get("_sender_email", "")
+        if sender_email.lower() != PAUL_EMAIL.lower():
+            return "Access denied — inbox reading is only available to Paul."
+        hours = tool_input.get("hours", 24)
+        return read_paul_inbox(hours=hours, max_emails=40)
+
+
     elif tool_name == "read_slack_channel":
         if not SLACK_BOT_TOKEN:
             return "Slack is not configured."
@@ -949,6 +971,7 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
             
             log.info(f"Tool call: {tool_name}({list(tool_input.keys())})")
             
+            tool_input["_sender_email"] = sender_email
             result = execute_tool(tool_name, tool_input)
             
             if result == "__FINISH__":
@@ -1217,10 +1240,12 @@ def run_scheduled_tasks():
     now = datetime.now(timezone.utc)
     if should_run("last_daily_search", 24) and now.hour >= 6:
         run_daily_search()
-    # Monday briefing at 8am UK time (UTC+1 in summer, UTC in winter)
-    # Use UTC 7am as a safe threshold that covers both GMT and BST
+    # Monday briefing at 8am UK time
     if now.weekday() == 0 and now.hour >= 7 and now.hour < 9 and should_run("last_weekly_briefing", 144):
         run_weekly_briefing()
+    # Inbox summary at 9am UTC and 3pm UTC (runs if not sent in last 5 hours)
+    if now.hour in (9, 15) and should_run("last_inbox_summary", 5):
+        run_inbox_summary()
 
 # ── Main inbox loop ───────────────────────────────────────────────────────────
 
@@ -1300,6 +1325,132 @@ def check_inbox():
         log.error(f"Inbox check failed: {e}")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
+
+# ── Gmail inbox reader (Paul only) ────────────────────────────────────────────
+
+def get_gmail_access_token():
+    """Get a fresh Gmail access token using the existing Google OAuth refresh token."""
+    if not GOOGLE_CLIENT_ID or not GOOGLE_REFRESH_TOKEN:
+        return None
+    try:
+        data = urllib.parse.urlencode({
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": GOOGLE_REFRESH_TOKEN,
+            "grant_type": "refresh_token"
+        }).encode()
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST"
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        return json.loads(resp.read()).get("access_token")
+    except Exception as e:
+        log.error(f"Gmail token refresh failed: {e}")
+        return None
+
+def gmail_api(path, token, params=None):
+    """Call Gmail API."""
+    url = f"https://gmail.googleapis.com/gmail/v1/users/me/{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        return json.loads(resp.read())
+    except Exception as e:
+        log.error(f"Gmail API error ({path}): {e}")
+        return None
+
+def read_paul_inbox(hours=24, max_emails=30):
+    """Read Paul's inbox and return a structured summary."""
+    token = get_gmail_access_token()
+    if not token:
+        return "Gmail not configured — cannot read inbox."
+
+    # Search for recent emails
+    after_ts = int((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
+    result = gmail_api("messages", token, {
+        "q": f"in:inbox after:{after_ts}",
+        "maxResults": max_emails
+    })
+    if not result:
+        return "Could not access Gmail."
+
+    messages = result.get("messages", [])
+    if not messages:
+        return f"No emails in inbox in the last {hours} hours."
+
+    emails = []
+    for msg in messages[:max_emails]:
+        detail = gmail_api(f"messages/{msg['id']}", token, {
+            "format": "metadata",
+            "metadataHeaders": "From,Subject,Date"
+        })
+        if not detail:
+            continue
+        headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
+        snippet = detail.get("snippet", "")[:200]
+        label_ids = detail.get("labelIds", [])
+        is_unread = "UNREAD" in label_ids
+        emails.append({
+            "from": headers.get("From", "Unknown"),
+            "subject": headers.get("Subject", "(no subject)"),
+            "date": headers.get("Date", ""),
+            "snippet": snippet,
+            "unread": is_unread,
+            "id": msg["id"]
+        })
+
+    # Sort unread first
+    emails.sort(key=lambda x: (not x["unread"], x["date"]))
+
+    lines = []
+    unread_count = sum(1 for e in emails if e["unread"])
+    lines.append(f"Inbox summary — last {hours}h — {len(emails)} emails ({unread_count} unread):\n")
+    for e in emails:
+        status = "🔴 UNREAD" if e["unread"] else "✓ read"
+        lines.append(f"{status} | {e['date'][:16]} | From: {e['from']} | {e['subject']}")
+        if e["snippet"]:
+            lines.append(f"   → {e['snippet']}")
+    return "\n".join(lines)
+
+def run_inbox_summary():
+    """Generate and send Paul an inbox summary."""
+    log.info("Generating inbox summary for Paul...")
+    try:
+        inbox_data = read_paul_inbox(hours=24, max_emails=40)
+        
+        prompt = f"""You are Agent Amber. You have just read Paul's inbox at Ocean Energy Pathway.
+
+Here is the raw inbox data:
+{inbox_data}
+
+Write Paul a concise, intelligent inbox summary. Structure it as:
+
+1. **Needs your reply** — emails where Paul hasn't responded and a response looks needed
+2. **Needs your attention** — important emails, decisions, or time-sensitive items  
+3. **FYI / low priority** — updates, newsletters, things he can skim or ignore
+4. **Anything you might have missed** — older unread items worth flagging
+
+Be direct and specific. Name the sender and subject. Add a one-line note on why it matters where relevant.
+Keep the whole thing under 400 words. Don't pad it out."""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        summary = response.content[0].text.strip()
+        now_str = datetime.now(timezone.utc).strftime("%A %d %b, %H:%M UTC")
+        send_email(PAUL_EMAIL, f"[Amber] Inbox summary — {now_str}", summary)
+        remember("schedule", "last_inbox_summary", datetime.now(timezone.utc).isoformat())
+        log.info("Inbox summary sent to Paul")
+    except Exception as e:
+        log.error(f"Inbox summary failed: {e}")
 
 # ── Slack integration ────────────────────────────────────────────────────────
 
