@@ -300,7 +300,7 @@ def get_drive_service():
             client_id=GOOGLE_CLIENT_ID,
             client_secret=GOOGLE_CLIENT_SECRET,
             token_uri="https://oauth2.googleapis.com/token",
-            scopes=["https://www.googleapis.com/auth/drive.readonly"]
+            scopes=["https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.readonly"]
         )
         # Refresh to get a valid access token
         creds.refresh(Request())
@@ -309,6 +309,76 @@ def get_drive_service():
     except Exception as e:
         log.warning(f"Google Drive not available: {e}")
     return _drive_service
+
+
+def upload_to_drive(filename, content_bytes, mimetype, folder_name="Amber Infographics"):
+    """Upload a file to Google Drive, creating folder if needed. Returns shareable link."""
+    token = get_gmail_access_token()  # reuse same OAuth token
+    if not token:
+        return None, "Google Drive not configured"
+    
+    try:
+        # Find or create folder
+        folder_id = None
+        search = gmail_api.__func__ if hasattr(gmail_api, '__func__') else None
+        
+        # Search for existing folder
+        import urllib.request, urllib.parse, json
+        url = f"https://www.googleapis.com/drive/v3/files?q=name%3D%27{urllib.parse.quote(folder_name)}%27+and+mimeType%3D%27application%2Fvnd.google-apps.folder%27+and+trashed%3Dfalse&fields=files(id,name)"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        resp = urllib.request.urlopen(req, timeout=10)
+        folders = json.loads(resp.read()).get("files", [])
+        
+        if folders:
+            folder_id = folders[0]["id"]
+        else:
+            # Create folder
+            folder_meta = json.dumps({"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}).encode()
+            req = urllib.request.Request(
+                "https://www.googleapis.com/drive/v3/files",
+                data=folder_meta,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                method="POST"
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            folder_id = json.loads(resp.read())["id"]
+
+        # Multipart upload
+        boundary = "amber_boundary_xyz"
+        metadata = json.dumps({"name": filename, "parents": [folder_id]}).encode()
+        body = (
+            f"--{boundary}\r\nContent-Type: application/json\r\n\r\n".encode() +
+            metadata + f"\r\n--{boundary}\r\nContent-Type: {mimetype}\r\n\r\n".encode() +
+            content_bytes + f"\r\n--{boundary}--".encode()
+        )
+        req = urllib.request.Request(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": f"multipart/related; boundary={boundary}"
+            },
+            method="POST"
+        )
+        resp = urllib.request.urlopen(req, timeout=30)
+        result = json.loads(resp.read())
+        file_id = result["id"]
+        
+        # Make it shareable (anyone with link can view)
+        perm_data = json.dumps({"role": "reader", "type": "anyone"}).encode()
+        req = urllib.request.Request(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions",
+            data=perm_data,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST"
+        )
+        urllib.request.urlopen(req, timeout=10)
+        
+        link = result.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
+        return link, None
+    except Exception as e:
+        log.error(f"Drive upload error: {e}")
+        return None, str(e)
 
 # ── Tool definitions for Claude ───────────────────────────────────────────────
 
@@ -422,6 +492,31 @@ TOOLS = [
                 "description": {"type": "string", "description": "Clear description of the issue"}
             },
             "required": ["board", "issue_type", "description"]
+        }
+    },
+    {
+        "name": "create_infographic",
+        "description": "Create a visual HTML infographic from data and save it to Google Drive. Use when asked to create visual summaries, status dashboards, project overviews, or any data visualisation. You provide the title, a description of what to show, and the data — Amber generates a clean styled infographic and returns a shareable Drive link.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Title of the infographic"},
+                "subtitle": {"type": "string", "description": "Optional subtitle or date"},
+                "sections": {
+                    "type": "array",
+                    "description": "Sections of content to display",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "heading": {"type": "string"},
+                            "type": {"type": "string", "enum": ["text", "table", "status_grid", "stat_row", "bullets"]},
+                            "content": {"type": "string", "description": "Text content, or JSON string for structured data"}
+                        }
+                    }
+                },
+                "colour_scheme": {"type": "string", "enum": ["ocean", "corporate", "warm", "dark"], "default": "ocean"}
+            },
+            "required": ["title", "sections"]
         }
     },
     {
@@ -754,6 +849,105 @@ def execute_tool(tool_name, tool_input):
     elif tool_name == "flag_issue":
         track_issue(tool_input["board"], tool_input["issue_type"], tool_input["description"])
         return f"Issue flagged: {tool_input['board']} — {tool_input['description']}"
+
+    elif tool_name == "create_infographic":
+        title = tool_input.get("title", "OEP Report")
+        subtitle = tool_input.get("subtitle", "")
+        sections = tool_input.get("sections", [])
+        scheme = tool_input.get("colour_scheme", "ocean")
+
+        colours = {
+            "ocean": {"primary": "#0077B6", "secondary": "#00B4D8", "accent": "#90E0EF", "bg": "#f0f8ff", "text": "#03045E"},
+            "corporate": {"primary": "#2C3E50", "secondary": "#3498DB", "accent": "#ECF0F1", "bg": "#f8f9fa", "text": "#2C3E50"},
+            "warm": {"primary": "#E76F51", "secondary": "#F4A261", "accent": "#FFE8D6", "bg": "#fff8f0", "text": "#3D405B"},
+            "dark": {"primary": "#6C63FF", "secondary": "#3F3D56", "accent": "#F5F5F5", "bg": "#1a1a2e", "text": "#e0e0e0"},
+        }.get(scheme, {"primary": "#0077B6", "secondary": "#00B4D8", "accent": "#90E0EF", "bg": "#f0f8ff", "text": "#03045E"})
+
+        sections_html = ""
+        for sec in sections:
+            heading = sec.get("heading", "")
+            stype = sec.get("type", "text")
+            content_raw = sec.get("content", "")
+            
+            if stype == "bullets":
+                items = [f"<li>{line.lstrip('•-* ')}</li>" for line in content_raw.split("\n") if line.strip()]
+                sections_html += f'<div class="section"><h2>{heading}</h2><ul>{"".join(items)}</ul></div>'
+            elif stype == "stat_row":
+                try:
+                    stats = json.loads(content_raw)
+                    stat_html = "".join(f'<div class="stat"><div class="stat-num">{s["value"]}</div><div class="stat-label">{s["label"]}</div></div>' for s in stats)
+                    sections_html += f'<div class="section"><h2>{heading}</h2><div class="stat-row">{stat_html}</div></div>'
+                except:
+                    sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
+            elif stype == "status_grid":
+                try:
+                    items = json.loads(content_raw)
+                    grid_html = "".join(f'<div class="grid-item status-{item.get("status","neutral").lower().replace(" ","-")}"><span class="grid-name">{item["name"]}</span><span class="grid-status">{item.get("status","")}</span></div>' for item in items)
+                    sections_html += f'<div class="section"><h2>{heading}</h2><div class="status-grid">{grid_html}</div></div>'
+                except:
+                    sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
+            elif stype == "table":
+                try:
+                    rows = json.loads(content_raw)
+                    if rows:
+                        headers = list(rows[0].keys())
+                        thead = "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
+                        tbody = "".join("<tr>" + "".join(f"<td>{row.get(h,'')}</td>" for h in headers) + "</tr>" for row in rows)
+                        sections_html += f'<div class="section"><h2>{heading}</h2><table><thead>{thead}</thead><tbody>{tbody}</tbody></table></div>'
+                except:
+                    sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
+            else:
+                sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
+
+        from datetime import datetime, timezone
+        generated = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+  body {{font-family: 'Segoe UI', Arial, sans-serif; background: {colours["bg"]}; color: {colours["text"]}; margin: 0; padding: 0;}}
+  .header {{background: linear-gradient(135deg, {colours["primary"]}, {colours["secondary"]}); color: white; padding: 40px; text-align: center;}}
+  .header h1 {{margin: 0; font-size: 2.2em; letter-spacing: 1px;}}
+  .header .subtitle {{opacity: 0.85; margin-top: 8px; font-size: 1.1em;}}
+  .container {{max-width: 960px; margin: 0 auto; padding: 30px 20px;}}
+  .section {{background: white; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.07);}}
+  .section h2 {{color: {colours["primary"]}; border-bottom: 2px solid {colours["accent"]}; padding-bottom: 8px; margin-top: 0;}}
+  .stat-row {{display: flex; gap: 16px; flex-wrap: wrap;}}
+  .stat {{flex: 1; min-width: 120px; background: {colours["accent"]}; border-radius: 8px; padding: 16px; text-align: center;}}
+  .stat-num {{font-size: 2em; font-weight: bold; color: {colours["primary"]};}}
+  .stat-label {{font-size: 0.85em; margin-top: 4px; opacity: 0.8;}}
+  .status-grid {{display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;}}
+  .grid-item {{border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 4px;}}
+  .grid-name {{font-weight: bold; font-size: 0.95em;}}
+  .grid-status {{font-size: 0.8em; opacity: 0.85;}}
+  .status-on-track {{background: #d4edda; color: #155724;}}
+  .status-at-risk {{background: #fff3cd; color: #856404;}}
+  .status-blocked {{background: #f8d7da; color: #721c24;}}
+  .status-neutral {{background: #e2e3e5; color: #383d41;}}
+  .status-done {{background: #cce5ff; color: #004085;}}
+  table {{width: 100%; border-collapse: collapse; font-size: 0.92em;}}
+  th {{background: {colours["primary"]}; color: white; padding: 10px 12px; text-align: left;}}
+  td {{padding: 9px 12px; border-bottom: 1px solid {colours["accent"]};}}
+  tr:hover td {{background: {colours["accent"]}20;}}
+  ul {{padding-left: 20px; line-height: 1.8;}}
+  .footer {{text-align: center; padding: 20px; font-size: 0.8em; opacity: 0.5;}}
+</style>
+</head>
+<body>
+<div class="header"><h1>{title}</h1>{f'<div class="subtitle">{subtitle}</div>' if subtitle else ''}</div>
+<div class="container">
+{sections_html}
+<div class="footer">Generated by Agent Amber · {generated}</div>
+</div>
+</body></html>"""
+
+        filename = title.replace(" ", "_").replace("/", "-")[:50] + ".html"
+        link, err = upload_to_drive(filename, html.encode("utf-8"), "text/html")
+        if err:
+            return f"Infographic created but could not upload to Drive: {err}"
+        return f"Infographic created and saved to Drive: {link}"
+
 
     elif tool_name == "read_paul_inbox":
         # Security gate — only Paul can use this tool
