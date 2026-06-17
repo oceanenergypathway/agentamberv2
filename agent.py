@@ -868,17 +868,19 @@ def execute_tool(tool_name, tool_input):
             heading = sec.get("heading", "")
             stype = sec.get("type", "text")
             content_raw = sec.get("content", "")
+            if not isinstance(content_raw, str):
+                content_raw = json.dumps(content_raw)
             
             if stype == "bullets":
-                # Handle both plain text and JSON arrays
-                try:
-                    parsed = json.loads(content_raw)
-                    if isinstance(parsed, list):
-                        lines = parsed
-                    else:
-                        lines = content_raw.split("\n")
-                except:
-                    lines = content_raw.split("\n")
+                # Handle list object, JSON string, or plain text
+                if isinstance(content_raw, list):
+                    lines = content_raw
+                else:
+                    try:
+                        parsed = json.loads(str(content_raw))
+                        lines = parsed if isinstance(parsed, list) else str(content_raw).split("\n")
+                    except:
+                        lines = str(content_raw).split("\n")
                 items = [f"<li>{str(line).lstrip('•-* ').strip()}</li>" for line in lines if str(line).strip()]
                 sections_html += f'<div class="section"><h2>{heading}</h2><ul>{"".join(items)}</ul></div>'
             elif stype == "stat_row":
