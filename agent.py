@@ -935,9 +935,11 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
     
     for iteration in range(max_iterations):
         log.info(f"Agentic loop iteration {iteration + 1}")
-        # Force finish on last iteration
+        # Force finish on last iteration — use a plain user message, not a fake tool_result
         if iteration == max_iterations - 2:
-            messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "forced", "content": "IMPORTANT: You must call the finish tool NOW with your complete response. Do not make any more tool calls."}]})
+            # Only add this if the last message was from the assistant (not mid-tool-use)
+            if messages and messages[-1]["role"] == "assistant":
+                messages.append({"role": "user", "content": "Please call the finish tool now with your complete response."})
         
         response = client.messages.create(
             model="claude-sonnet-4-6",
