@@ -870,7 +870,16 @@ def execute_tool(tool_name, tool_input):
             content_raw = sec.get("content", "")
             
             if stype == "bullets":
-                items = [f"<li>{line.lstrip('•-* ')}</li>" for line in content_raw.split("\n") if line.strip()]
+                # Handle both plain text and JSON arrays
+                try:
+                    parsed = json.loads(content_raw)
+                    if isinstance(parsed, list):
+                        lines = parsed
+                    else:
+                        lines = content_raw.split("\n")
+                except:
+                    lines = content_raw.split("\n")
+                items = [f"<li>{str(line).lstrip('•-* ').strip()}</li>" for line in lines if str(line).strip()]
                 sections_html += f'<div class="section"><h2>{heading}</h2><ul>{"".join(items)}</ul></div>'
             elif stype == "stat_row":
                 try:
@@ -906,32 +915,35 @@ def execute_tool(tool_name, tool_input):
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <style>
-  body {{font-family: 'Segoe UI', Arial, sans-serif; background: {colours["bg"]}; color: {colours["text"]}; margin: 0; padding: 0;}}
-  .header {{background: linear-gradient(135deg, {colours["primary"]}, {colours["secondary"]}); color: white; padding: 40px; text-align: center;}}
-  .header h1 {{margin: 0; font-size: 2.2em; letter-spacing: 1px;}}
-  .header .subtitle {{opacity: 0.85; margin-top: 8px; font-size: 1.1em;}}
-  .container {{max-width: 960px; margin: 0 auto; padding: 30px 20px;}}
-  .section {{background: white; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.07);}}
-  .section h2 {{color: {colours["primary"]}; border-bottom: 2px solid {colours["accent"]}; padding-bottom: 8px; margin-top: 0;}}
-  .stat-row {{display: flex; gap: 16px; flex-wrap: wrap;}}
-  .stat {{flex: 1; min-width: 120px; background: {colours["accent"]}; border-radius: 8px; padding: 16px; text-align: center;}}
-  .stat-num {{font-size: 2em; font-weight: bold; color: {colours["primary"]};}}
-  .stat-label {{font-size: 0.85em; margin-top: 4px; opacity: 0.8;}}
-  .status-grid {{display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px;}}
-  .grid-item {{border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 4px;}}
-  .grid-name {{font-weight: bold; font-size: 0.95em;}}
-  .grid-status {{font-size: 0.8em; opacity: 0.85;}}
-  .status-on-track {{background: #d4edda; color: #155724;}}
-  .status-at-risk {{background: #fff3cd; color: #856404;}}
-  .status-blocked {{background: #f8d7da; color: #721c24;}}
-  .status-neutral {{background: #e2e3e5; color: #383d41;}}
-  .status-done {{background: #cce5ff; color: #004085;}}
-  table {{width: 100%; border-collapse: collapse; font-size: 0.92em;}}
-  th {{background: {colours["primary"]}; color: white; padding: 10px 12px; text-align: left;}}
-  td {{padding: 9px 12px; border-bottom: 1px solid {colours["accent"]};}}
-  tr:hover td {{background: {colours["accent"]}20;}}
-  ul {{padding-left: 20px; line-height: 1.8;}}
-  .footer {{text-align: center; padding: 20px; font-size: 0.8em; opacity: 0.5;}}
+  *{{box-sizing:border-box;margin:0;padding:0;}}
+  body{{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#1a1a1a;font-size:15px;line-height:1.6;}}
+  .header{{background:{colours["primary"]};color:white;padding:36px 40px;}}
+  .header h1{{font-size:1.8em;font-weight:600;letter-spacing:-0.3px;}}
+  .header .subtitle{{opacity:0.8;margin-top:6px;font-size:0.95em;}}
+  .container{{max-width:900px;margin:0 auto;padding:28px 20px;}}
+  .section{{background:white;border-radius:10px;padding:22px 24px;margin-bottom:20px;border:1px solid #e8e8e8;}}
+  .section h2{{font-size:1em;font-weight:600;color:{colours["primary"]};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid #eee;}}
+  .stat-row{{display:flex;gap:12px;flex-wrap:wrap;}}
+  .stat{{flex:1;min-width:110px;background:#f8f8f8;border-radius:8px;padding:14px;text-align:center;border:1px solid #eee;}}
+  .stat-num{{font-size:1.9em;font-weight:700;color:{colours["primary"]};}}
+  .stat-label{{font-size:0.78em;margin-top:3px;color:#666;}}
+  .status-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;}}
+  .grid-item{{border-radius:8px;padding:11px 13px;border:1px solid rgba(0,0,0,0.06);}}
+  .grid-name{{font-weight:600;font-size:0.9em;}}
+  .grid-status{{font-size:0.75em;margin-top:3px;}}
+  .status-on-track{{background:#f0faf4;color:#1a6b3a;}}
+  .status-at-risk{{background:#fffbf0;color:#7a5c00;}}
+  .status-blocked{{background:#fff5f5;color:#8b1a1a;}}
+  .status-neutral{{background:#f5f5f5;color:#444;}}
+  .status-done{{background:#f0f4ff;color:#1a3a8b;}}
+  table{{width:100%;border-collapse:collapse;font-size:0.88em;}}
+  th{{background:{colours["primary"]};color:white;padding:9px 11px;text-align:left;font-weight:500;font-size:0.85em;text-transform:uppercase;letter-spacing:0.04em;}}
+  td{{padding:9px 11px;border-bottom:1px solid #f0f0f0;vertical-align:top;}}
+  tr:last-child td{{border-bottom:none;}}
+  tr:hover td{{background:#fafafa;}}
+  ul{{padding-left:0;list-style:none;}}
+  ul li{{padding:8px 12px;border-radius:6px;margin-bottom:6px;background:#f8f8f8;border-left:3px solid {colours["primary"]};font-size:0.9em;}}
+  .footer{{text-align:center;padding:16px;font-size:0.75em;color:#aaa;}}
 </style>
 </head>
 <body>
@@ -946,7 +958,37 @@ def execute_tool(tool_name, tool_input):
         link, err = upload_to_drive(filename, html.encode("utf-8"), "text/html")
         if err:
             return f"Infographic created but could not upload to Drive: {err}"
-        return f"Infographic created and saved to Drive: {link}"
+        
+        # Also email the HTML so it opens correctly in a browser
+        try:
+            import base64, email.mime.multipart, email.mime.text, email.mime.base, email.mime.application, email.encoders
+            token = get_gmail_access_token()
+            if token:
+                msg = email.mime.multipart.MIMEMultipart()
+                msg["to"] = PAUL_EMAIL
+                msg["subject"] = f"[Amber] {title}"
+                body_part = email.mime.text.MIMEText(
+                    f"Hi Paul,\n\nYour infographic is attached. Open the .html file in your browser to view it.\n\nAlso saved to Drive: {link}\n\n— Amber",
+                    "plain"
+                )
+                msg.attach(body_part)
+                attach = email.mime.base.MIMEBase("text", "html")
+                attach.set_payload(html.encode("utf-8"))
+                email.encoders.encode_base64(attach)
+                attach.add_header("Content-Disposition", "attachment", filename=filename)
+                msg.attach(attach)
+                raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+                send_req = urllib.request.Request(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                    data=json.dumps({"raw": raw}).encode(),
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    method="POST"
+                )
+                urllib.request.urlopen(send_req, timeout=15)
+        except Exception as e:
+            log.error(f"Infographic email failed: {e}")
+        
+        return f"Infographic created! Saved to Drive: {link}\n\nI've also emailed it to you as an HTML attachment — open it in your browser for the best view."
 
 
     elif tool_name == "read_paul_inbox":
