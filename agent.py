@@ -1433,6 +1433,194 @@ def should_run(key, interval_hours):
     except:
         return True
 
+
+def run_strategic_thinking():
+    """Amber's daily deep think — synthesises all sources and generates proactive strategic insights for Paul."""
+    log.info("Running strategic thinking session...")
+
+    # Max 2 strategic insights per day
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    count_key = f"strategic_count_{today}"
+    count = int(recall("strategic", count_key) or "0")
+    if count >= 2:
+        log.info("Strategic insight limit reached for today (2/2)")
+        return
+
+    # Gather context from all sources
+    context_parts = []
+
+    # 1. Monday board summary
+    try:
+        boards_raw = recall("boards", "known_boards") or "{}"
+        boards = json.loads(boards_raw)
+        if boards:
+            context_parts.append("MONDAY.COM BOARDS:")
+            for board_id, board_name in list(boards.items())[:8]:
+                context_parts.append(f"  - {board_name} (ID: {board_id})")
+    except:
+        pass
+
+    # 2. Recent market intel
+    try:
+        intel = get_recent_intel(days=7)
+        if intel:
+            context_parts.append("\nRECENT MARKET INTELLIGENCE (last 7 days):")
+            for row in intel[:10]:
+                country, headline, summary, source, ts = row
+                context_parts.append(f"  - {country}: {headline}")
+    except:
+        pass
+
+    # 3. Recent Slack digest
+    try:
+        oldest = str((datetime.now(timezone.utc) - timedelta(hours=48)).timestamp())
+        auth = slack_get("auth.test", {})
+        bot_user_id = auth.get("user_id", "") if auth else ""
+        users_result = slack_get("users.list", {"limit": 200})
+        user_map = {}
+        if users_result and users_result.get("ok"):
+            for u in users_result.get("members", []):
+                user_map[u["id"]] = u.get("real_name") or u.get("name", u["id"])
+        channels_result = slack_get("conversations.list", {
+            "types": "public_channel", "exclude_archived": "true", "limit": 100
+        })
+        if channels_result and channels_result.get("ok"):
+            channels = [c for c in channels_result.get("channels", []) if c.get("is_member")]
+            slack_msgs = []
+            for ch in channels[:8]:
+                result = slack_get("conversations.history", {
+                    "channel": ch["id"], "oldest": oldest, "limit": 20
+                })
+                if result and result.get("ok"):
+                    for msg in result.get("messages", []):
+                        if msg.get("bot_id") or not msg.get("user"):
+                            continue
+                        uid = msg.get("user", "")
+                        if uid == bot_user_id:
+                            continue
+                        name = user_map.get(uid, uid)
+                        text = msg.get("text", "").strip()[:200]
+                        if text:
+                            slack_msgs.append(f"[#{ch['name']}] {name}: {text}")
+            if slack_msgs:
+                context_parts.append("\nRECENT SLACK ACTIVITY (last 48h):")
+                context_parts.extend(slack_msgs[:40])
+    except Exception as e:
+        log.error(f"Strategic think - Slack error: {e}")
+
+    # 4. Previously flagged insights (to avoid repeating)
+    already_flagged = recall("strategic", "flagged_insights") or ""
+
+    if not context_parts:
+        log.info("Not enough context for strategic thinking session")
+        return
+
+    context_text = "\n".join(context_parts)
+
+    prompt = f"""You are Agent Amber — a strategic intelligence assistant for Ocean Energy Pathway (OEP), a consultancy accelerating offshore wind development across emerging markets.
+
+You have just completed your daily synthesis of OEP's operational and market intelligence. Your job is to think like a sharp strategy consultant and identify ONE insight that Paul (CEO) genuinely needs to know about.
+
+Think across two lenses simultaneously:
+- STRATEGIC OPPORTUNITIES: new markets, untapped partnerships, funding angles, competitive positioning, connections between workstreams nobody has spotted
+- OPERATIONAL INTELLIGENCE: patterns in project delays, resource bottlenecks, team dynamics affecting delivery, systemic issues hiding in the data
+
+Here is your full context:
+{context_text}
+
+Previously flagged insights (do not repeat): {already_flagged[:800]}
+
+Now think carefully. Ask yourself:
+- What pattern is emerging across multiple countries or projects?
+- What opportunity exists that OEP hasn't formally pursued?
+- What risk is building quietly that Paul might not see yet?
+- What connection between two seemingly separate things is worth exploring?
+- What would a smart external advisor notice that the team is too close to see?
+
+Only flag something if it is GENUINELY interesting and actionable. Do not fabricate insights — only work from the data above. If nothing stands out, say so.
+
+Respond in JSON only:
+{{
+  "worth_flagging": true/false,
+  "type": "opportunity" or "operational",
+  "headline": "One sharp sentence — what you noticed",
+  "context": "2-3 sentences explaining the evidence and background",
+  "why_it_matters": "1-2 sentences on the strategic or operational significance",
+  "options": ["Option 1", "Option 2", "Option 3"],
+  "recommendation": "Your single recommended next step — specific and actionable",
+  "confidence": "high/medium/low"
+}}"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.content[0].text.strip()
+        raw = re.sub(r"^```json|^```|```$", "", raw, flags=re.MULTILINE).strip()
+        result = json.loads(raw)
+
+        if not result.get("worth_flagging"):
+            log.info("Strategic thinking: nothing worth flagging today")
+            return
+
+        headline = result.get("headline", "")
+        context_str = result.get("context", "")
+        why = result.get("why_it_matters", "")
+        options = result.get("options", [])
+        recommendation = result.get("recommendation", "")
+        insight_type = result.get("type", "opportunity").upper()
+        confidence = result.get("confidence", "medium")
+
+        # Avoid repeating similar insights
+        if headline[:60] in already_flagged:
+            log.info("Strategic thinking: similar insight already flagged, skipping")
+            return
+
+        # Format options as numbered list
+        options_text = "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
+
+        # Confidence badge
+        conf_label = {"high": "High confidence", "medium": "Medium confidence", "low": "Exploratory"}.get(confidence, "")
+
+        body = f"""Hi Paul,
+
+Here's something I've been thinking about — [{insight_type}] {conf_label}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{headline}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**What I noticed**
+{context_str}
+
+**Why it matters**
+{why}
+
+**Your options**
+{options_text}
+
+**What I'd recommend**
+{recommendation}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Reply to dig deeper or ask me to explore any of the options above.
+
+— Amber"""
+
+        subject = f"[Amber] {headline}"
+        send_email(PAUL_EMAIL, subject, body)
+        log.info(f"Strategic insight sent: {headline}")
+
+        # Update counters and memory
+        remember("strategic", count_key, str(count + 1))
+        new_flagged = (already_flagged + " | " + headline)[-2000:]
+        remember("strategic", "flagged_insights", new_flagged)
+
+    except Exception as e:
+        log.error(f"Strategic thinking error: {e}")
+
 def run_daily_search():
     log.info("Running daily market intelligence search...")
     markets = [
@@ -1475,15 +1663,32 @@ def run_weekly_briefing():
     log.info("Weekly briefing sent")
 
 def run_scheduled_tasks():
-    now = datetime.now(timezone.utc)
-    if should_run("last_daily_search", 24) and now.hour >= 6:
+    now_utc = datetime.now(timezone.utc)
+    # Convert to UK local time (BST = UTC+1 in summer, GMT = UTC+0 in winter)
+    # Python's datetime handles DST automatically via astimezone
+    try:
+        import zoneinfo
+        uk_tz = zoneinfo.ZoneInfo("Europe/London")
+    except ImportError:
+        import pytz
+        uk_tz = pytz.timezone("Europe/London")
+    now = now_utc.astimezone(uk_tz)
+    uk_hour = now.hour
+
+    if should_run("last_daily_search", 24) and uk_hour >= 7:
         run_daily_search()
     # Monday briefing at 8am UK time
-    if now.weekday() == 0 and now.hour >= 7 and now.hour < 9 and should_run("last_weekly_briefing", 144):
+    if now.weekday() == 0 and uk_hour >= 8 and uk_hour < 10 and should_run("last_weekly_briefing", 144):
         run_weekly_briefing()
-    # Inbox summary at 9am UTC and 3pm UTC (runs if not sent in last 5 hours)
-    if now.hour in (9, 15) and should_run("last_inbox_summary", 5):
+    # Inbox summary at 9am and 3pm UK time
+    if uk_hour in (9, 15) and should_run("last_inbox_summary", 5):
         run_inbox_summary()
+    # Strategic thinking session daily at 8am UK time
+    if uk_hour >= 8 and should_run("last_strategic_think", 20):
+        run_strategic_thinking()
+        remember("schedule", "last_strategic_think", datetime.now(timezone.utc).isoformat())
+    # Proactive intelligence scan — keep running on UTC cycle
+    # (already handled in main loop counter)
 
 # ── Main inbox loop ───────────────────────────────────────────────────────────
 
