@@ -43,6 +43,55 @@ IMAP_SERVER    = os.environ.get("IMAP_SERVER", "imap.gmail.com")
 POLL_INTERVAL  = int(os.environ.get("POLL_INTERVAL", "120"))
 AGENT_NAME     = "Agent Amber"
 PAUL_EMAIL     = os.environ.get("PAUL_EMAIL", "paul@oceanenergypathway.org")
+# ── Access control ─────────────────────────────────────────────────────────────
+# Shared drives Amber is allowed to search (exact names, case-insensitive)
+ALLOWED_SHARED_DRIVES = [
+    "communication and events",
+    "countries",
+    "fundraising and grants",
+    "programs and projects",
+    "strategy and policy",
+]
+
+# Monday.com board folders/workspaces to block (case-insensitive, partial match)
+BLOCKED_MONDAY_FOLDERS = [
+    "finance",
+    "hr",
+    "human resources",
+    "salary",
+    "salaries",
+    "payroll",
+    "contracts",
+    "funders",
+    "fundraising",
+]
+
+# Board name keywords that should always be blocked regardless of folder
+BLOCKED_BOARD_KEYWORDS = [
+    "salary", "salaries", "payroll", "budget", "invoice", "contract",
+    "hr ", "human resource", "recruitment", "appraisal", "performance review",
+    "funder", "fundrais", "grant application", "donor"
+]
+
+def is_board_allowed(board_name: str, workspace_name: str = "") -> bool:
+    """Return False if a Monday board should be blocked from Amber."""
+    name_lower = board_name.lower()
+    workspace_lower = workspace_name.lower()
+    # Block if workspace/folder is sensitive
+    for blocked in BLOCKED_MONDAY_FOLDERS:
+        if blocked in workspace_lower:
+            return False
+    # Block if board name contains sensitive keywords
+    for kw in BLOCKED_BOARD_KEYWORDS:
+        if kw in name_lower:
+            return False
+    return True
+
+def is_drive_allowed(drive_name: str) -> bool:
+    """Return True only if a shared drive is in the allowlist."""
+    return drive_name.lower().strip() in ALLOWED_SHARED_DRIVES
+
+
 OEP_DOMAIN     = "oceanenergypathway.org"
 
 # Slack (optional - gracefully disabled if not configured)
@@ -789,29 +838,52 @@ def execute_tool(tool_name, tool_input):
         try:
             query = tool_input["query"]
             file_type = tool_input.get("file_type", "")
-            
-            q = f"fullText contains '{query}' and trashed = false"
-            if file_type == "doc":
-                q += " and mimeType = 'application/vnd.google-apps.document'"
-            elif file_type == "sheet":
-                q += " and mimeType = 'application/vnd.google-apps.spreadsheet'"
-            elif file_type == "pdf":
-                q += " and mimeType = 'application/pdf'"
-            
-            results = drive.files().list(
-                q=q,
-                pageSize=10,
-                fields="files(id, name, mimeType, modifiedTime, description)"
-            ).execute()
-            
-            files = results.get("files", [])
+
+            # Get allowed shared drive IDs
+            all_drives = drive.drives().list(fields="drives(id,name)").execute()
+            allowed_drive_ids = [
+                d["id"] for d in all_drives.get("drives", [])
+                if is_drive_allowed(d["name"])
+            ]
+
+            all_files = []
+            for drive_id in allowed_drive_ids:
+                q = f"fullText contains '{query}' and trashed = false"
+                if file_type == "doc":
+                    q += " and mimeType = 'application/vnd.google-apps.document'"
+                elif file_type == "sheet":
+                    q += " and mimeType = 'application/vnd.google-apps.spreadsheet'"
+                elif file_type == "pdf":
+                    q += " and mimeType = 'application/pdf'"
+                try:
+                    results = drive.files().list(
+                        q=q,
+                        pageSize=8,
+                        corpora="drive",
+                        driveId=drive_id,
+                        includeItemsFromAllDrives=True,
+                        supportsAllDrives=True,
+                        fields="files(id, name, mimeType, modifiedTime, driveId)"
+                    ).execute()
+                    all_files.extend(results.get("files", []))
+                except Exception:
+                    continue
+
+            # Deduplicate by id
+            seen = set()
+            unique_files = []
+            for f in all_files:
+                if f["id"] not in seen:
+                    seen.add(f["id"])
+                    unique_files.append(f)
+
             return json.dumps([{
                 "id": f["id"],
                 "name": f["name"],
                 "type": f["mimeType"],
                 "modified": f.get("modifiedTime", "")
-            } for f in files])
-            
+            } for f in unique_files[:10]])
+
         except Exception as e:
             return f"Drive search error: {e}"
 
@@ -1458,7 +1530,8 @@ def run_strategic_thinking():
         if boards:
             context_parts.append("MONDAY.COM BOARDS:")
             for board_id, board_name in list(boards.items())[:8]:
-                context_parts.append(f"  - {board_name} (ID: {board_id})")
+                if is_board_allowed(board_name):
+                    context_parts.append(f"  - {board_name} (ID: {board_id})")
     except:
         pass
 
