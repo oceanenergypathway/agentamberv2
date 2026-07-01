@@ -1434,28 +1434,44 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
                 return text
             break
         
-        # Process tool calls
+        # Process tool calls — MUST collect ALL tool_use blocks in this response
+        # before acting on any of them, to ensure every tool_use gets a tool_result.
+        tool_calls = [b for b in response.content if b.type == "tool_use"]
         tool_results = []
         final_response = None
         iteration_tools = []
-        
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-                
+
+        for block in tool_calls:
             tool_name = block.name
-            tool_input = block.input
-            
+            tool_input = dict(block.input)
+
             log.info(f"Tool call: {tool_name}({list(tool_input.keys())})")
             iteration_tools.append(tool_name)
 
             tool_input["_sender_email"] = sender_email
             result = execute_tool(tool_name, tool_input)
-            
+
             if result == "__FINISH__":
+                # Still need to add a stub tool_result for this block so the
+                # conversation stays valid, then add stub results for any
+                # remaining tool calls in the same batch.
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": "done"
+                })
                 final_response = tool_input.get("response", "")
+                # Add stub results for any tool_use blocks we haven't processed yet
+                remaining = tool_calls[tool_calls.index(block) + 1:]
+                for rem_block in remaining:
+                    log.info(f"Stub result for unprocessed tool: {rem_block.name}")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": rem_block.id,
+                        "content": "skipped - finish was called"
+                    })
                 break
-            
+
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
