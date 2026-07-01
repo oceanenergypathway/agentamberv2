@@ -1,5 +1,5 @@
 """
-Agent Amber v11 — Full autonomous self-learning agent
+Agent Amber v35 — Full autonomous self-learning agent
 - Agentic loop: thinks, picks tools, acts, learns
 - Self-discovers monday.com board structure
 - Web search for market intelligence  
@@ -7,6 +7,8 @@ Agent Amber v11 — Full autonomous self-learning agent
 - Memory via PostgreSQL
 - Internal OEP emails sent directly, external go to Paul
 - Daily web search, weekly Monday briefing
+- Slide decks output as .pptx → opens directly as Google Slides
+  (requires: pip install python-pptx)
 """
 
 import imaplib
@@ -545,15 +547,15 @@ TOOLS = [
     },
     {
         "name": "create_infographic",
-        "description": "Create a visual HTML infographic from data and save it to Google Drive. Use when asked to create visual summaries, status dashboards, project overviews, or any data visualisation. You provide the title, a description of what to show, and the data — Amber generates a clean styled infographic and returns a shareable Drive link.",
+        "description": "Create a visual slide deck (.pptx) from data and save it to Google Drive. The file opens directly as Google Slides. Use when asked to create visual summaries, status dashboards, project overviews, slide decks, briefings, or any data visualisation. You provide the title and sections — Amber generates a clean styled presentation and returns a shareable Drive link that opens in Google Slides.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "Title of the infographic"},
+                "title": {"type": "string", "description": "Title of the presentation"},
                 "subtitle": {"type": "string", "description": "Optional subtitle or date"},
                 "sections": {
                     "type": "array",
-                    "description": "Sections of content to display",
+                    "description": "Sections of content — each becomes one or more slides",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -928,126 +930,275 @@ def execute_tool(tool_name, tool_input):
         sections = tool_input.get("sections", [])
         scheme = tool_input.get("colour_scheme", "ocean")
 
-        colours = {
-            "ocean": {"primary": "#0077B6", "secondary": "#00B4D8", "accent": "#90E0EF", "bg": "#f0f8ff", "text": "#03045E"},
-            "corporate": {"primary": "#2C3E50", "secondary": "#3498DB", "accent": "#ECF0F1", "bg": "#f8f9fa", "text": "#2C3E50"},
-            "warm": {"primary": "#E76F51", "secondary": "#F4A261", "accent": "#FFE8D6", "bg": "#fff8f0", "text": "#3D405B"},
-            "dark": {"primary": "#6C63FF", "secondary": "#3F3D56", "accent": "#F5F5F5", "bg": "#1a1a2e", "text": "#e0e0e0"},
-        }.get(scheme, {"primary": "#0077B6", "secondary": "#00B4D8", "accent": "#90E0EF", "bg": "#f0f8ff", "text": "#03045E"})
+        # Colour palettes — (primary_hex, accent_hex, text_on_primary_hex)
+        palettes = {
+            "ocean":     {"primary": (0x00, 0x77, 0xB6), "accent": (0x90, 0xE0, 0xEF), "dark": (0x03, 0x04, 0x5E)},
+            "corporate": {"primary": (0x2C, 0x3E, 0x50), "accent": (0x34, 0x98, 0xDB), "dark": (0x1a, 0x1a, 0x2e)},
+            "warm":      {"primary": (0xE7, 0x6F, 0x51), "accent": (0xF4, 0xA2, 0x61), "dark": (0x3D, 0x40, 0x5B)},
+            "dark":      {"primary": (0x6C, 0x63, 0xFF), "accent": (0x3F, 0x3D, 0x56), "dark": (0x1a, 0x1a, 0x2e)},
+        }
+        pal = palettes.get(scheme, palettes["ocean"])
 
-        sections_html = ""
-        for sec in sections:
-            heading = sec.get("heading", "")
-            stype = sec.get("type", "text")
-            content_raw = sec.get("content", "")
-            if not isinstance(content_raw, str):
-                content_raw = json.dumps(content_raw)
-            
-            if stype == "bullets":
-                # Handle list object, JSON string, or plain text
-                if isinstance(content_raw, list):
-                    lines = content_raw
-                else:
+        try:
+            import io
+            from pptx import Presentation
+            from pptx.util import Inches, Pt, Emu
+            from pptx.dml.color import RGBColor
+            from pptx.enum.text import PP_ALIGN
+            from pptx.util import Inches, Pt
+
+            PRIMARY = RGBColor(*pal["primary"])
+            ACCENT  = RGBColor(*pal["accent"])
+            DARK    = RGBColor(*pal["dark"])
+            WHITE   = RGBColor(0xFF, 0xFF, 0xFF)
+            LIGHT   = RGBColor(0xF5, 0xF5, 0xF5)
+            MID     = RGBColor(0x44, 0x44, 0x44)
+
+            SW = Inches(13.33)  # widescreen 16:9
+            SH = Inches(7.5)
+
+            prs = Presentation()
+            prs.slide_width  = SW
+            prs.slide_height = SH
+
+            def blank_slide(prs):
+                layout = prs.slide_layouts[6]  # completely blank
+                return prs.slides.add_slide(layout)
+
+            def fill_shape(shape, rgb):
+                shape.fill.solid()
+                shape.fill.fore_color.rgb = rgb
+
+            def add_rect(slide, left, top, width, height, rgb):
+                shape = slide.shapes.add_shape(1, left, top, width, height)  # MSO_SHAPE_TYPE.RECTANGLE=1
+                fill_shape(shape, rgb)
+                shape.line.fill.background()
+                return shape
+
+            def add_textbox(slide, text, left, top, width, height,
+                            font_size=18, bold=False, color=None, align=PP_ALIGN.LEFT, wrap=True):
+                txb = slide.shapes.add_textbox(left, top, width, height)
+                tf  = txb.text_frame
+                tf.word_wrap = wrap
+                p   = tf.paragraphs[0]
+                p.alignment = align
+                run = p.add_run()
+                run.text = str(text)
+                run.font.size = Pt(font_size)
+                run.font.bold = bold
+                run.font.color.rgb = color or DARK
+                return txb
+
+            # ── TITLE SLIDE ──────────────────────────────────────────────────
+            sl = blank_slide(prs)
+            add_rect(sl, 0, 0, SW, SH, PRIMARY)                          # full bg
+            add_rect(sl, 0, SH - Inches(0.08), SW, Inches(0.08), ACCENT) # bottom strip
+
+            # Title
+            add_textbox(sl, title,
+                        Inches(1), Inches(2.2), Inches(11.33), Inches(1.8),
+                        font_size=44, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
+            # Subtitle
+            if subtitle:
+                add_textbox(sl, subtitle,
+                            Inches(1), Inches(4.1), Inches(11.33), Inches(0.7),
+                            font_size=20, color=ACCENT, align=PP_ALIGN.CENTER)
+            # Footer
+            generated = datetime.now(timezone.utc).strftime("%d %b %Y")
+            add_textbox(sl, f"Generated by Agent Amber · {generated}",
+                        Inches(1), Inches(6.8), Inches(11.33), Inches(0.4),
+                        font_size=11, color=RGBColor(0xCC, 0xDD, 0xFF), align=PP_ALIGN.CENTER)
+
+            # ── CONTENT SLIDES ───────────────────────────────────────────────
+            for sec in sections:
+                heading     = sec.get("heading", "")
+                stype       = sec.get("type", "text")
+                content_raw = sec.get("content", "")
+                if not isinstance(content_raw, str):
+                    content_raw = json.dumps(content_raw)
+
+                sl = blank_slide(prs)
+
+                # Header bar
+                add_rect(sl, 0, 0, SW, Inches(1.1), PRIMARY)
+                add_rect(sl, 0, Inches(1.1), SW, Inches(0.05), ACCENT)
+
+                # Slide title in header
+                add_textbox(sl, heading,
+                            Inches(0.5), Inches(0.15), Inches(12.33), Inches(0.8),
+                            font_size=26, bold=True, color=WHITE)
+
+                # Footer strip
+                add_rect(sl, 0, SH - Inches(0.35), SW, Inches(0.35), LIGHT)
+                add_textbox(sl, title,
+                            Inches(0.4), SH - Inches(0.32), Inches(8), Inches(0.28),
+                            font_size=9, color=MID)
+
+                CONTENT_TOP  = Inches(1.3)
+                CONTENT_H    = Inches(5.9)
+                CONTENT_L    = Inches(0.5)
+                CONTENT_W    = Inches(12.33)
+
+                if stype == "bullets":
+                    # Parse bullet list
+                    if isinstance(content_raw, list):
+                        lines = content_raw
+                    else:
+                        try:
+                            parsed = json.loads(content_raw)
+                            lines = parsed if isinstance(parsed, list) else content_raw.split("\n")
+                        except:
+                            lines = content_raw.split("\n")
+                    lines = [str(l).lstrip("•-* ").strip() for l in lines if str(l).strip()]
+
+                    txb = slide.shapes.add_textbox if False else sl.shapes.add_textbox(
+                        CONTENT_L, CONTENT_TOP, CONTENT_W, CONTENT_H)
+                    tf = txb.text_frame
+                    tf.word_wrap = True
+                    for i, line in enumerate(lines[:12]):
+                        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                        p.text = f"  •  {line}"
+                        p.space_before = Pt(6)
+                        run = p.runs[0] if p.runs else p.add_run()
+                        run.font.size = Pt(18)
+                        run.font.color.rgb = DARK
+
+                elif stype == "stat_row":
                     try:
-                        parsed = json.loads(str(content_raw))
-                        lines = parsed if isinstance(parsed, list) else str(content_raw).split("\n")
+                        stats = json.loads(content_raw)
                     except:
-                        lines = str(content_raw).split("\n")
-                items = [f"<li>{str(line).lstrip('•-* ').strip()}</li>" for line in lines if str(line).strip()]
-                sections_html += f'<div class="section"><h2>{heading}</h2><ul>{"".join(items)}</ul></div>'
-            elif stype == "stat_row":
-                try:
-                    stats = json.loads(content_raw)
-                    stat_html = "".join(f'<div class="stat"><div class="stat-num">{s["value"]}</div><div class="stat-label">{s["label"]}</div></div>' for s in stats)
-                    sections_html += f'<div class="section"><h2>{heading}</h2><div class="stat-row">{stat_html}</div></div>'
-                except:
-                    sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
-            elif stype == "status_grid":
-                try:
-                    items = json.loads(content_raw)
-                    grid_html = "".join(f'<div class="grid-item status-{item.get("status","neutral").lower().replace(" ","-")}"><span class="grid-name">{item["name"]}</span><span class="grid-status">{item.get("status","")}</span></div>' for item in items)
-                    sections_html += f'<div class="section"><h2>{heading}</h2><div class="status-grid">{grid_html}</div></div>'
-                except:
-                    sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
-            elif stype == "table":
-                try:
-                    rows = json.loads(content_raw)
+                        stats = []
+                    n = max(len(stats), 1)
+                    box_w = Inches(12.33 / n) - Inches(0.15)
+                    for i, s in enumerate(stats[:6]):
+                        lft = Inches(0.5) + i * (box_w + Inches(0.15))
+                        # Box background
+                        add_rect(sl, lft, CONTENT_TOP + Inches(0.3), box_w, Inches(2.2), LIGHT)
+                        # Value
+                        add_textbox(sl, str(s.get("value", "")),
+                                    lft, CONTENT_TOP + Inches(0.4), box_w, Inches(1.4),
+                                    font_size=40, bold=True, color=PRIMARY, align=PP_ALIGN.CENTER)
+                        # Label
+                        add_textbox(sl, str(s.get("label", "")),
+                                    lft, CONTENT_TOP + Inches(1.8), box_w, Inches(0.6),
+                                    font_size=13, color=MID, align=PP_ALIGN.CENTER)
+
+                elif stype == "status_grid":
+                    try:
+                        items = json.loads(content_raw)
+                    except:
+                        items = []
+                    STATUS_COLORS = {
+                        "on-track":  (RGBColor(0xE8, 0xF5, 0xE9), RGBColor(0x1B, 0x5E, 0x20)),
+                        "on track":  (RGBColor(0xE8, 0xF5, 0xE9), RGBColor(0x1B, 0x5E, 0x20)),
+                        "at-risk":   (RGBColor(0xFF, 0xF9, 0xC4), RGBColor(0x7A, 0x5C, 0x00)),
+                        "at risk":   (RGBColor(0xFF, 0xF9, 0xC4), RGBColor(0x7A, 0x5C, 0x00)),
+                        "blocked":   (RGBColor(0xFF, 0xEB, 0xEE), RGBColor(0x8B, 0x1A, 0x1A)),
+                        "done":      (RGBColor(0xE8, 0xEA, 0xFF), RGBColor(0x1A, 0x3A, 0x8B)),
+                        "neutral":   (RGBColor(0xF5, 0xF5, 0xF5), MID),
+                    }
+                    cols = 4
+                    box_w = Inches(2.9)
+                    box_h = Inches(0.85)
+                    gap   = Inches(0.15)
+                    for idx, item in enumerate(items[:16]):
+                        col = idx % cols
+                        row = idx // cols
+                        lft = Inches(0.5) + col * (box_w + gap)
+                        top = CONTENT_TOP + Inches(0.1) + row * (box_h + gap)
+                        status_key = item.get("status", "neutral").lower()
+                        bg, fg = STATUS_COLORS.get(status_key, STATUS_COLORS["neutral"])
+                        add_rect(sl, lft, top, box_w, box_h, bg)
+                        add_textbox(sl, item.get("name", ""),
+                                    lft + Inches(0.1), top + Inches(0.05), box_w - Inches(0.2), Inches(0.4),
+                                    font_size=13, bold=True, color=fg)
+                        add_textbox(sl, item.get("status", ""),
+                                    lft + Inches(0.1), top + Inches(0.45), box_w - Inches(0.2), Inches(0.3),
+                                    font_size=11, color=fg)
+
+                elif stype == "table":
+                    try:
+                        rows = json.loads(content_raw)
+                    except:
+                        rows = []
                     if rows:
                         headers = list(rows[0].keys())
-                        thead = "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
-                        tbody = "".join("<tr>" + "".join(f"<td>{row.get(h,'')}</td>" for h in headers) + "</tr>" for row in rows)
-                        sections_html += f'<div class="section"><h2>{heading}</h2><table><thead>{thead}</thead><tbody>{tbody}</tbody></table></div>'
-                except:
-                    sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
-            else:
-                sections_html += f'<div class="section"><h2>{heading}</h2><p>{content_raw}</p></div>'
+                        ncols = len(headers)
+                        nrows = min(len(rows), 10)
+                        col_w = [Inches(12.33 / ncols)] * ncols
+                        row_h = [Inches(0.45)] * (nrows + 1)
+                        tbl = sl.shapes.add_table(nrows + 1, ncols,
+                                                   CONTENT_L, CONTENT_TOP,
+                                                   Inches(12.33), Inches(0.45 * (nrows + 1))).table
+                        tbl.columns
+                        for ci, h in enumerate(headers):
+                            cell = tbl.cell(0, ci)
+                            cell.text = h.upper()
+                            cell.fill.solid()
+                            cell.fill.fore_color.rgb = PRIMARY
+                            for para in cell.text_frame.paragraphs:
+                                for run in para.runs:
+                                    run.font.color.rgb = WHITE
+                                    run.font.bold = True
+                                    run.font.size = Pt(12)
+                        for ri, row in enumerate(rows[:10]):
+                            for ci, h in enumerate(headers):
+                                cell = tbl.cell(ri + 1, ci)
+                                cell.text = str(row.get(h, ""))
+                                if ri % 2 == 0:
+                                    cell.fill.solid()
+                                    cell.fill.fore_color.rgb = LIGHT
+                                for para in cell.text_frame.paragraphs:
+                                    for run in para.runs:
+                                        run.font.size = Pt(12)
+                                        run.font.color.rgb = DARK
 
-        from datetime import datetime, timezone
-        generated = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
-        html = f"""<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title>
-<style>
-  *{{box-sizing:border-box;margin:0;padding:0;}}
-  body{{font-family:'Segoe UI',Arial,sans-serif;background:#f5f5f5;color:#1a1a1a;font-size:15px;line-height:1.6;}}
-  .header{{background:{colours["primary"]};color:white;padding:36px 40px;}}
-  .header h1{{font-size:1.8em;font-weight:600;letter-spacing:-0.3px;}}
-  .header .subtitle{{opacity:0.8;margin-top:6px;font-size:0.95em;}}
-  .container{{max-width:900px;margin:0 auto;padding:28px 20px;}}
-  .section{{background:white;border-radius:10px;padding:22px 24px;margin-bottom:20px;border:1px solid #e8e8e8;}}
-  .section h2{{font-size:1em;font-weight:600;color:{colours["primary"]};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid #eee;}}
-  .stat-row{{display:flex;gap:12px;flex-wrap:wrap;}}
-  .stat{{flex:1;min-width:110px;background:#f8f8f8;border-radius:8px;padding:14px;text-align:center;border:1px solid #eee;}}
-  .stat-num{{font-size:1.9em;font-weight:700;color:{colours["primary"]};}}
-  .stat-label{{font-size:0.78em;margin-top:3px;color:#666;}}
-  .status-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;}}
-  .grid-item{{border-radius:8px;padding:11px 13px;border:1px solid rgba(0,0,0,0.06);}}
-  .grid-name{{font-weight:600;font-size:0.9em;}}
-  .grid-status{{font-size:0.75em;margin-top:3px;}}
-  .status-on-track{{background:#f0faf4;color:#1a6b3a;}}
-  .status-at-risk{{background:#fffbf0;color:#7a5c00;}}
-  .status-blocked{{background:#fff5f5;color:#8b1a1a;}}
-  .status-neutral{{background:#f5f5f5;color:#444;}}
-  .status-done{{background:#f0f4ff;color:#1a3a8b;}}
-  table{{width:100%;border-collapse:collapse;font-size:0.88em;}}
-  th{{background:{colours["primary"]};color:white;padding:9px 11px;text-align:left;font-weight:500;font-size:0.85em;text-transform:uppercase;letter-spacing:0.04em;}}
-  td{{padding:9px 11px;border-bottom:1px solid #f0f0f0;vertical-align:top;}}
-  tr:last-child td{{border-bottom:none;}}
-  tr:hover td{{background:#fafafa;}}
-  ul{{padding-left:0;list-style:none;}}
-  ul li{{padding:8px 12px;border-radius:6px;margin-bottom:6px;background:#f8f8f8;border-left:3px solid {colours["primary"]};font-size:0.9em;}}
-  .footer{{text-align:center;padding:16px;font-size:0.75em;color:#aaa;}}
-</style>
-</head>
-<body>
-<div class="header"><h1>{title}</h1>{f'<div class="subtitle">{subtitle}</div>' if subtitle else ''}</div>
-<div class="container">
-{sections_html}
-<div class="footer">Generated by Agent Amber · {generated}</div>
-</div>
-</body></html>"""
+                else:  # plain text
+                    add_textbox(sl, content_raw,
+                                CONTENT_L, CONTENT_TOP, CONTENT_W, CONTENT_H,
+                                font_size=18, color=DARK)
 
-        filename = title.replace(" ", "_").replace("/", "-")[:50] + ".html"
-        link, err = upload_to_drive(filename, html.encode("utf-8"), "text/html")
+            # ── Save to bytes ────────────────────────────────────────────────
+            buf = io.BytesIO()
+            prs.save(buf)
+            pptx_bytes = buf.getvalue()
+
+        except ImportError:
+            return ("python-pptx is not installed. Run: pip install python-pptx\n"
+                    "Then redeploy the agent.")
+        except Exception as e:
+            log.error(f"PPTX generation error: {e}\n{traceback.format_exc()}")
+            return f"Slide deck generation failed: {e}"
+
+        # ── Upload as .pptx — Google Drive auto-converts to Google Slides ──
+        safe_name = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")[:50]
+        filename  = safe_name + ".pptx"
+        mime      = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+        link, err = upload_to_drive(filename, pptx_bytes, mime, folder_name="Amber Presentations")
         if err:
-            return f"Infographic created but could not upload to Drive: {err}"
-        
-        # Also email the HTML so it opens correctly in a browser
+            return f"Slide deck created but could not upload to Drive: {err}"
+
+        # ── Also email as attachment ─────────────────────────────────────────
         try:
-            import base64, email.mime.multipart, email.mime.text, email.mime.base, email.mime.application, email.encoders
+            import base64, email.mime.multipart, email.mime.text, email.mime.base, email.encoders
             token = get_gmail_access_token()
             if token:
                 msg = email.mime.multipart.MIMEMultipart()
                 msg["to"] = PAUL_EMAIL
                 msg["subject"] = f"[Amber] {title}"
                 body_part = email.mime.text.MIMEText(
-                    f"Hi Paul,\n\nYour infographic is attached. Open the .html file in your browser to view it.\n\nAlso saved to Drive: {link}\n\n— Amber",
+                    f"Hi Paul,\n\nYour slide deck is ready.\n\n"
+                    f"Open in Google Slides: {link}\n\n"
+                    f"(The .pptx attachment also opens in Google Slides or PowerPoint.)\n\n— Amber",
                     "plain"
                 )
                 msg.attach(body_part)
-                attach = email.mime.base.MIMEBase("text", "html")
-                attach.set_payload(html.encode("utf-8"))
+                attach = email.mime.base.MIMEBase(
+                    "application",
+                    "vnd.openxmlformats-officedocument.presentationml.presentation"
+                )
+                attach.set_payload(pptx_bytes)
                 email.encoders.encode_base64(attach)
                 attach.add_header("Content-Disposition", "attachment", filename=filename)
                 msg.attach(attach)
@@ -1060,9 +1211,11 @@ def execute_tool(tool_name, tool_input):
                 )
                 urllib.request.urlopen(send_req, timeout=15)
         except Exception as e:
-            log.error(f"Infographic email failed: {e}")
-        
-        return f"Infographic created! Saved to Drive: {link}\n\nI've also emailed it to you as an HTML attachment — open it in your browser for the best view."
+            log.error(f"Slide deck email failed: {e}")
+
+        return (f"Slide deck created ({len(sections)} slides)!\n\n"
+                f"Open in Google Slides: {link}\n\n"
+                f"I've also emailed it to you as a .pptx — click the Drive link and it will open directly in Google Slides.")
 
 
     elif tool_name == "read_paul_inbox":
@@ -2379,7 +2532,7 @@ This is an automated insight from my monitoring of OEP channels. Reply if you'd 
         log.error(f"Proactive intelligence error: {e}")
 
 if __name__ == "__main__":
-    log.info(f"Agent Amber v11 starting — polling every {POLL_INTERVAL}s")
+    log.info(f"Agent Amber v35 starting — polling every {POLL_INTERVAL}s")
     log.info(f"Watching:  {AGENT_EMAIL}")
     log.info(f"Approver:  {APPROVER_EMAIL}")
     log.info(f"Domain:    @{OEP_DOMAIN}")
