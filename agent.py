@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 """
-Agent Amber v35 — Full autonomous self-learning agent
+Agent Amber v36 - Full autonomous self-learning agent
 - Agentic loop: thinks, picks tools, acts, learns
 - Self-discovers monday.com board structure
 - Web search for market intelligence  
@@ -7,7 +8,7 @@ Agent Amber v35 — Full autonomous self-learning agent
 - Memory via PostgreSQL
 - Internal OEP emails sent directly, external go to Paul
 - Daily web search, weekly Monday briefing
-- Slide decks output as .pptx → opens directly as Google Slides
+- Slide decks output as .pptx -> opens directly as Google Slides
   (requires: pip install python-pptx)
 """
 
@@ -34,7 +35,7 @@ from anthropic import Anthropic
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config --------------------------------------------------------------------
 AGENT_EMAIL    = os.environ["AGENT_EMAIL"]
 AGENT_PASSWORD = os.environ["AGENT_PASSWORD"]
 APPROVER_EMAIL = os.environ["APPROVER_EMAIL"]
@@ -45,7 +46,7 @@ IMAP_SERVER    = os.environ.get("IMAP_SERVER", "imap.gmail.com")
 POLL_INTERVAL  = int(os.environ.get("POLL_INTERVAL", "120"))
 AGENT_NAME     = "Agent Amber"
 PAUL_EMAIL     = os.environ.get("PAUL_EMAIL", "paul@oceanenergypathway.org")
-# ── Access control ─────────────────────────────────────────────────────────────
+# -- Access control -------------------------------------------------------------
 # Shared drives Amber is allowed to search (exact names, case-insensitive)
 ALLOWED_SHARED_DRIVES = [
     "communication and events",
@@ -108,7 +109,7 @@ GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
 client = Anthropic()
 pending_approvals = {}
 
-# ── Database ──────────────────────────────────────────────────────────────────
+# -- Database ------------------------------------------------------------------
 
 def get_db():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -283,7 +284,7 @@ def get_staff_history(staff_email, limit=5):
     except:
         return []
 
-# ── Monday.com API ────────────────────────────────────────────────────────────
+# -- Monday.com API ------------------------------------------------------------
 
 def monday_api(query):
     data = json.dumps({"query": query}).encode("utf-8")
@@ -330,7 +331,7 @@ def days_ago(iso_str):
     except:
         return None
 
-# ── Google Drive ──────────────────────────────────────────────────────────────
+# -- Google Drive --------------------------------------------------------------
 
 _drive_service = None
 
@@ -431,12 +432,12 @@ def upload_to_drive(filename, content_bytes, mimetype, folder_name="Amber Infogr
         log.error(f"Drive upload error: {e}")
         return None, str(e)
 
-# ── Tool definitions for Claude ───────────────────────────────────────────────
+# -- Tool definitions for Claude -----------------------------------------------
 
 TOOLS = [
     {
         "name": "explore_board",
-        "description": "Explore a monday.com board's structure — discover column names, types, and what data they contain. Use this when you encounter a board you haven't seen before or need to understand its structure. Stores findings for future use.",
+        "description": "Explore a monday.com board's structure - discover column names, types, and what data they contain. Use this when you encounter a board you haven't seen before or need to understand its structure. Stores findings for future use.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -461,7 +462,7 @@ TOOLS = [
     },
     {
         "name": "get_activity",
-        "description": "Get the activity log for a monday.com board. Captures ALL types of activity including comments, status changes, file uploads, new items — anything that happened on the board.",
+        "description": "Get the activity log for a monday.com board. Captures ALL types of activity including comments, status changes, file uploads, new items - anything that happened on the board.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -478,7 +479,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
-                "context": {"type": "string", "description": "Why you're searching — helps focus results"}
+                "context": {"type": "string", "description": "Why you're searching - helps focus results"}
             },
             "required": ["query"]
         }
@@ -547,7 +548,7 @@ TOOLS = [
     },
     {
         "name": "create_infographic",
-        "description": "Create a visual slide deck (.pptx) from data and save it to Google Drive. The file opens directly as Google Slides. Use when asked to create visual summaries, status dashboards, project overviews, slide decks, briefings, or any data visualisation. You provide the title and sections — Amber generates a clean styled presentation and returns a shareable Drive link that opens in Google Slides.",
+        "description": "Create a visual slide deck (.pptx) from data and save it to Google Drive. The file opens directly as Google Slides. Use when asked to create visual summaries, status dashboards, project overviews, slide decks, briefings, or any data visualisation. You provide the title and sections - Amber generates a clean styled presentation and returns a shareable Drive link that opens in Google Slides.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -555,7 +556,7 @@ TOOLS = [
                 "subtitle": {"type": "string", "description": "Optional subtitle or date"},
                 "sections": {
                     "type": "array",
-                    "description": "Sections of content — each becomes one or more slides",
+                    "description": "Sections of content - each becomes one or more slides",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -572,7 +573,7 @@ TOOLS = [
     },
     {
         "name": "read_paul_inbox",
-        "description": "Read Paul's email inbox and return a summary of recent emails. ONLY available when responding to Paul (paul@oceanenergypathway.org) — never use this for any other sender. Use when Paul asks about his emails, wants a summary, asks what he's missed, or asks you to remind him of things.",
+        "description": "Read Paul's email inbox and return a summary of recent emails. ONLY available when responding to Paul (paul@oceanenergypathway.org) - never use this for any other sender. Use when Paul asks about his emails, wants a summary, asks what he's missed, or asks you to remind him of things.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -588,7 +589,7 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "channel_name": {"type": "string", "description": "Channel name e.g. '#general', '#japan', '#programme' — or 'all' to get a summary across all channels"},
+                "channel_name": {"type": "string", "description": "Channel name e.g. '#general', '#japan', '#programme' - or 'all' to get a summary across all channels"},
                 "hours": {"type": "integer", "description": "How many hours back to look (default 48)", "default": 48},
                 "limit": {"type": "integer", "description": "Max messages to return (default 30)", "default": 30}
             },
@@ -597,7 +598,7 @@ TOOLS = [
     },
     {
         "name": "finish",
-        "description": "Call this when you are ready to send your response. The 'response' field IS the email that gets sent immediately. Write the COMPLETE email content here — do not summarise what you are about to write, do not say 'let me compile this now', do not use this as a placeholder. The full briefing, analysis, or answer goes directly in the response field. This is the last tool you call.",
+        "description": "Call this when you are ready to send your response. The 'response' field IS the email that gets sent immediately. Write the COMPLETE email content here - do not summarise what you are about to write, do not say 'let me compile this now', do not use this as a placeholder. The full briefing, analysis, or answer goes directly in the response field. This is the last tool you call.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -608,7 +609,7 @@ TOOLS = [
     }
 ]
 
-# ── Tool execution ────────────────────────────────────────────────────────────
+# -- Tool execution ------------------------------------------------------------
 
 def execute_tool(tool_name, tool_input):
     """Execute a tool call and return the result."""
@@ -922,7 +923,7 @@ def execute_tool(tool_name, tool_input):
 
     elif tool_name == "flag_issue":
         track_issue(tool_input["board"], tool_input["issue_type"], tool_input["description"])
-        return f"Issue flagged: {tool_input['board']} — {tool_input['description']}"
+        return f"Issue flagged: {tool_input['board']} - {tool_input['description']}"
 
     elif tool_name == "create_infographic":
         title = tool_input.get("title", "OEP Report")
@@ -930,7 +931,7 @@ def execute_tool(tool_name, tool_input):
         sections = tool_input.get("sections", [])
         scheme = tool_input.get("colour_scheme", "ocean")
 
-        # Colour palettes — (primary_hex, accent_hex, text_on_primary_hex)
+        # Colour palettes - (primary_hex, accent_hex, text_on_primary_hex)
         palettes = {
             "ocean":     {"primary": (0x00, 0x77, 0xB6), "accent": (0x90, 0xE0, 0xEF), "dark": (0x03, 0x04, 0x5E)},
             "corporate": {"primary": (0x2C, 0x3E, 0x50), "accent": (0x34, 0x98, 0xDB), "dark": (0x1a, 0x1a, 0x2e)},
@@ -989,7 +990,7 @@ def execute_tool(tool_name, tool_input):
                 run.font.color.rgb = color or DARK
                 return txb
 
-            # ── TITLE SLIDE ──────────────────────────────────────────────────
+            # -- TITLE SLIDE --------------------------------------------------
             sl = blank_slide(prs)
             add_rect(sl, 0, 0, SW, SH, PRIMARY)                          # full bg
             add_rect(sl, 0, SH - Inches(0.08), SW, Inches(0.08), ACCENT) # bottom strip
@@ -1005,11 +1006,11 @@ def execute_tool(tool_name, tool_input):
                             font_size=20, color=ACCENT, align=PP_ALIGN.CENTER)
             # Footer
             generated = datetime.now(timezone.utc).strftime("%d %b %Y")
-            add_textbox(sl, f"Generated by Agent Amber · {generated}",
+            add_textbox(sl, f"Generated by Agent Amber * {generated}",
                         Inches(1), Inches(6.8), Inches(11.33), Inches(0.4),
                         font_size=11, color=RGBColor(0xCC, 0xDD, 0xFF), align=PP_ALIGN.CENTER)
 
-            # ── CONTENT SLIDES ───────────────────────────────────────────────
+            # -- CONTENT SLIDES -----------------------------------------------
             for sec in sections:
                 heading     = sec.get("heading", "")
                 stype       = sec.get("type", "text")
@@ -1049,7 +1050,7 @@ def execute_tool(tool_name, tool_input):
                             lines = parsed if isinstance(parsed, list) else content_raw.split("\n")
                         except:
                             lines = content_raw.split("\n")
-                    lines = [str(l).lstrip("•-* ").strip() for l in lines if str(l).strip()]
+                    lines = [str(l).lstrip("*-* ").strip() for l in lines if str(l).strip()]
 
                     txb = slide.shapes.add_textbox if False else sl.shapes.add_textbox(
                         CONTENT_L, CONTENT_TOP, CONTENT_W, CONTENT_H)
@@ -1057,7 +1058,7 @@ def execute_tool(tool_name, tool_input):
                     tf.word_wrap = True
                     for i, line in enumerate(lines[:12]):
                         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-                        p.text = f"  •  {line}"
+                        p.text = f"  *  {line}"
                         p.space_before = Pt(6)
                         run = p.runs[0] if p.runs else p.add_run()
                         run.font.size = Pt(18)
@@ -1158,7 +1159,7 @@ def execute_tool(tool_name, tool_input):
                                 CONTENT_L, CONTENT_TOP, CONTENT_W, CONTENT_H,
                                 font_size=18, color=DARK)
 
-            # ── Save to bytes ────────────────────────────────────────────────
+            # -- Save to bytes ------------------------------------------------
             buf = io.BytesIO()
             prs.save(buf)
             pptx_bytes = buf.getvalue()
@@ -1170,7 +1171,7 @@ def execute_tool(tool_name, tool_input):
             log.error(f"PPTX generation error: {e}\n{traceback.format_exc()}")
             return f"Slide deck generation failed: {e}"
 
-        # ── Upload as .pptx — Google Drive auto-converts to Google Slides ──
+        # -- Upload as .pptx - Google Drive auto-converts to Google Slides --
         safe_name = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")[:50]
         filename  = safe_name + ".pptx"
         mime      = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -1179,7 +1180,7 @@ def execute_tool(tool_name, tool_input):
         if err:
             return f"Slide deck created but could not upload to Drive: {err}"
 
-        # ── Also email as attachment ─────────────────────────────────────────
+        # -- Also email as attachment -----------------------------------------
         try:
             import base64, email.mime.multipart, email.mime.text, email.mime.base, email.encoders
             token = get_gmail_access_token()
@@ -1190,7 +1191,7 @@ def execute_tool(tool_name, tool_input):
                 body_part = email.mime.text.MIMEText(
                     f"Hi Paul,\n\nYour slide deck is ready.\n\n"
                     f"Open in Google Slides: {link}\n\n"
-                    f"(The .pptx attachment also opens in Google Slides or PowerPoint.)\n\n— Amber",
+                    f"(The .pptx attachment also opens in Google Slides or PowerPoint.)\n\n- Amber",
                     "plain"
                 )
                 msg.attach(body_part)
@@ -1213,16 +1214,18 @@ def execute_tool(tool_name, tool_input):
         except Exception as e:
             log.error(f"Slide deck email failed: {e}")
 
-        return (f"Slide deck created ({len(sections)} slides)!\n\n"
-                f"Open in Google Slides: {link}\n\n"
-                f"I've also emailed it to you as a .pptx — click the Drive link and it will open directly in Google Slides.")
+        return (
+            f"Slide deck created ({len(sections)} slides)!\n\n"
+            f"Open in Google Slides: {link}\n\n"
+            f"I've also emailed it to you as a .pptx - click the Drive link and it will open directly in Google Slides."
+        )
 
 
     elif tool_name == "read_paul_inbox":
-        # Security gate — only Paul can use this tool
+        # Security gate - only Paul can use this tool
         sender_email = tool_input.get("_sender_email", "")
         if sender_email.lower() != PAUL_EMAIL.lower():
-            return "Access denied — inbox reading is only available to Paul."
+            return "Access denied - inbox reading is only available to Paul."
         hours = tool_input.get("hours", 24)
         return read_paul_inbox(hours=hours, max_emails=40)
 
@@ -1297,7 +1300,7 @@ def execute_tool(tool_name, tool_input):
         # Sort by time
         all_messages.sort(key=lambda x: x["time"])
 
-        lines = [f"[#{m['channel']}] {m['time']} — {m['name']}: {m['text']}" for m in all_messages]
+        lines = [f"[#{m['channel']}] {m['time']} - {m['name']}: {m['text']}" for m in all_messages]
         return f"Found {len(lines)} messages:\n\n" + "\n".join(lines)
 
 
@@ -1306,7 +1309,7 @@ def execute_tool(tool_name, tool_input):
 
     return f"Unknown tool: {tool_name}"
 
-# ── Agentic loop ──────────────────────────────────────────────────────────────
+# -- Agentic loop --------------------------------------------------------------
 
 SYSTEM_PROMPT = """
 You are Agent Amber, OEP's Programme Intelligence Agent for Ocean Energy Pathway.
@@ -1317,53 +1320,53 @@ You have tools to explore monday.com boards, search the web, read Google Drive d
 and store/retrieve your own memories. Use them intelligently.
 
 CORE PRINCIPLES:
-1. Always recall memory before querying — you may already know the answer
+1. Always recall memory before querying - you may already know the answer
 2. Always explore_board before query_board if you haven't seen it before
-3. Be specific — name items, people, dates. Never generalise.
+3. Be specific - name items, people, dates. Never generalise.
 4. Skip completed/closed projects in operational analysis
 5. Cross-reference master board (ID: 1747605081) with country boards
-6. Flag issues that recur — they need escalation
+6. Flag issues that recur - they need escalation
 
 OEP BOARD STRUCTURE:
-- Master board ID: 1747605081 — "OEP Projects (DO NOT EDIT HERE)" — source of truth for status, timeline, owner, budget, funder
-- Country boards mirror from master — query master for governance data, country boards for activity/comments
+- Master board ID: 1747605081 - "OEP Projects (DO NOT EDIT HERE)" - source of truth for status, timeline, owner, budget, funder
+- Country boards mirror from master - query master for governance data, country boards for activity/comments
 - Countries: Brazil (1767248587), India (1767246703), Japan (1767245536), Philippines (1767246398), South Korea (1767190694), Vietnam (2053944026), Mexico (2007096589), Australia (1955282782), Colombia (1879431534)
-- Global projects (1767247726) — skip items where Location = QA
+- Global projects (1767247726) - skip items where Location = QA
 
 PROJECT CLOSURE RULES:
 - Closed = all subitems marked Done or Skip
 - Effectively closed = only "Final Evaluation with Chidinma" remaining open
-- If status on master board = "Completed" → skip from operational analysis
-- Monitoring items = description contains "Monitoring item — MEL final stages to be completed"
+- If status on master board = "Completed" -> skip from operational analysis
+- Monitoring items = description contains "Monitoring item - MEL final stages to be completed"
 
 MARKET PRIORITIES (staleness thresholds):
-- Japan, South Korea: 30 days (flagship — advisory roles active)
+- Japan, South Korea: 30 days (flagship - advisory roles active)
 - India, Brazil, Philippines: 45 days (high priority)
-- Vietnam, Colombia, Australia: 60 days (medium — note Australia auction Aug 2026 is IMMINENT)
+- Vietnam, Colombia, Australia: 60 days (medium - note Australia auction Aug 2026 is IMMINENT)
 - Mexico: 180 days (early stage, 3 projects is normal)
 
 OKR REPORTING:
 - Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec
-- OKR 1.3: 90% on schedule — needs timelines set
+- OKR 1.3: 90% on schedule - needs timelines set
 - Effectively closed projects count as delivered for that quarter
 - Count dissemination events: public events, publications, govt presentations, stakeholder workshops
 
-DATA QUALITY — flag per item:
-- No status set → blocks progress tracking
-- No timeline → blocks OKR 1.3
-- No owner → no accountability
-- Never updated since creation → likely placeholder
+DATA QUALITY - flag per item:
+- No status set -> blocks progress tracking
+- No timeline -> blocks OKR 1.3
+- No owner -> no accountability
+- Never updated since creation -> likely placeholder
 
 TONE: Professional, collegial, specific. Avoid dramatic language.
 Always include a "Board improvements" section in full briefings.
 
 When you have enough information, call the finish tool with your COMPLETE response.
 CRITICAL: The text you put in the finish tool IS the email that gets sent. 
-Do NOT say "I now have everything I need" or "Let me write the briefing" — write the actual briefing IN the finish tool.
+Do NOT say "I now have everything I need" or "Let me write the briefing" - write the actual briefing IN the finish tool.
 Do NOT use finish as a placeholder. The finish tool content = the email content. Write it all there.
 """
 
-def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
+def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
     """
     Run the agentic loop: Amber thinks, picks tools, acts, learns, repeats.
     Returns the final response string.
@@ -1384,7 +1387,7 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
             context_parts.append(f"[{date_str}] Asked: {q[:150]}")
     
     if persistent:
-        context_parts.append("\nPERSISTENT ISSUES (flagged 3+ consecutive checks — needs escalation):")
+        context_parts.append("\nPERSISTENT ISSUES (flagged 3+ consecutive checks - needs escalation):")
         for board, issue_type, desc, times, first_seen in persistent:
             date_str = first_seen.strftime("%d %b")
             context_parts.append(f"- {board}: {desc} (seen {times} times since {date_str})")
@@ -1395,14 +1398,23 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
             context_parts.append(f"- {country}: {headline}")
 
     messages = [{"role": "user", "content": "\n".join(context_parts)}]
-    
+
+    # Loop-detection: track recent tool calls to catch repetitive search spirals
+    recent_tool_calls = []  # rolling window of last 6 tool names
+
     for iteration in range(max_iterations):
         log.info(f"Agentic loop iteration {iteration + 1}")
-        # Force finish on last iteration — use a plain user message, not a fake tool_result
-        if iteration == max_iterations - 2:
-            # Only add this if the last message was from the assistant (not mid-tool-use)
-            if messages and messages[-1]["role"] == "assistant":
-                messages.append({"role": "user", "content": "Please call the finish tool now with your complete response."})
+
+        # Force finish when approaching limit - inject nudge 3 iterations before the end
+        if iteration == max_iterations - 3:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You are approaching the iteration limit. "
+                    "Stop searching and call the finish tool now with whatever you have found so far. "
+                    "Write your complete response inside the finish tool - do not summarise, write the full reply."
+                )
+            })
         
         response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -1417,15 +1429,15 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
         
         # Check stop reason
         if response.stop_reason == "end_turn":
-            # Extract text response
             text = " ".join(block.text for block in response.content if hasattr(block, "text"))
-            if text:
+            if text.strip():
                 return text
             break
         
         # Process tool calls
         tool_results = []
         final_response = None
+        iteration_tools = []
         
         for block in response.content:
             if block.type != "tool_use":
@@ -1435,7 +1447,8 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
             tool_input = block.input
             
             log.info(f"Tool call: {tool_name}({list(tool_input.keys())})")
-            
+            iteration_tools.append(tool_name)
+
             tool_input["_sender_email"] = sender_email
             result = execute_tool(tool_name, tool_input)
             
@@ -1449,25 +1462,53 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=15):
                 "content": str(result)[:8000]
             })
         
-        if final_response:
-            return final_response
-        
+        if final_response is not None:
+            # Ensure we never return an empty or whitespace-only response
+            if final_response.strip():
+                return final_response
+            else:
+                log.warning("finish tool called with empty response - continuing loop")
+
+        # Update rolling tool call window and detect search spirals
+        recent_tool_calls.extend(iteration_tools)
+        recent_tool_calls = recent_tool_calls[-6:]  # keep last 6
+        if len(recent_tool_calls) == 6 and all(t in ("search_drive", "read_document", "web_search") for t in recent_tool_calls):
+            log.warning("Search spiral detected - forcing finish")
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You appear to be stuck in a search loop. "
+                    "Stop searching now and call the finish tool with what you have. "
+                    "If you couldn't find everything, say so clearly and share what you did find."
+                )
+            })
+            recent_tool_calls = []  # reset so we don't keep injecting
+
         if tool_results:
             messages.append({"role": "user", "content": tool_results})
         else:
             break
     
-    # Fallback — extract any text from last response
-    if messages and messages[-1]["role"] == "assistant":
-        content = messages[-1]["content"]
-        if isinstance(content, list):
-            text = " ".join(block.text for block in content if hasattr(block, "text"))
-            if text:
-                return text
-    
-    return "I wasn't able to complete the analysis. Please try again or contact Paul."
+    # Fallback - extract any text from the last assistant message
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                text = " ".join(
+                    block.text for block in content if hasattr(block, "text") and block.text.strip()
+                )
+                if text.strip():
+                    log.warning("Returning fallback text from last assistant message")
+                    return text
+            break
 
-# ── Email helpers ─────────────────────────────────────────────────────────────
+    return (
+        "I ran into difficulties completing this analysis - "
+        "I may have been unable to access the files or data needed. "
+        "Please try again or let Paul know if this keeps happening."
+    )
+
+# -- Email helpers -------------------------------------------------------------
 
 def decode_str(value):
     if value is None: return ""
@@ -1511,10 +1552,10 @@ def format_html_email(text):
             in_list = False
     
     def apply_inline(s):
-        s = s.replace("🔴", '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128308; CRITICAL</span>')
-        s = s.replace("🟠", '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128992; ATTENTION</span>')
-        s = s.replace("🟡", '<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128993; MONITOR</span>')
-        s = s.replace("🟢", '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128994; HEALTHY</span>')
+        s = s.replace("[!]", '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128308; CRITICAL</span>')
+        s = s.replace("[~]", '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128992; ATTENTION</span>')
+        s = s.replace("[-]", '<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128993; MONITOR</span>')
+        s = s.replace("[ok]", '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;">&#128994; HEALTHY</span>')
         s = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', s)
         s = re.sub(r'\*(.+?)\*', r'<em>\1</em>', s)
         return s
@@ -1599,7 +1640,7 @@ def send_email(to, subject, body, from_name=None):
 def is_internal(email_addr):
     return email_addr.lower().endswith(f"@{OEP_DOMAIN}")
 
-# ── Approval flow ─────────────────────────────────────────────────────────────
+# -- Approval flow -------------------------------------------------------------
 
 def send_for_approval(original_from, original_name, original_subject, draft):
     approval_id = f"AMBER-{int(time.time())}"
@@ -1613,20 +1654,20 @@ def send_for_approval(original_from, original_name, original_subject, draft):
 
 Agent Amber has drafted a reply to an external email. Please APPROVE or REJECT.
 
-────────────────────────────────────
+------------------------------------
 APPROVAL ID: {approval_id}
 FROM:        {original_name} <{original_from}>
 SUBJECT:     {original_subject}
-────────────────────────────────────
+------------------------------------
 
 DRAFT REPLY:
 
 {draft}
 
-────────────────────────────────────
+------------------------------------
 Reply APPROVE or REJECT.
 """
-    send_email(APPROVER_EMAIL, f"[Agent Amber] Approval needed — {approval_id}", body)
+    send_email(APPROVER_EMAIL, f"[Agent Amber] Approval needed - {approval_id}", body)
     log.info(f"Sent for approval: {approval_id}")
 
 def handle_approval(body, subject):
@@ -1640,7 +1681,7 @@ def handle_approval(body, subject):
     if "APPROVE" in body.upper():
         item = pending_approvals.pop(aid)
         send_email(item["to"], item["subject"], item["body"])
-        send_email(APPROVER_EMAIL, f"[Agent Amber] Sent ✓ — {aid}",
+        send_email(APPROVER_EMAIL, f"[Agent Amber] Sent [sent] - {aid}",
                    f"Reply sent to {item['name']} <{item['to']}>.")
         log.info(f"Approved and sent: {aid}")
     elif "REJECT" in body.upper():
@@ -1648,7 +1689,7 @@ def handle_approval(body, subject):
         log.info(f"Rejected: {aid}")
     return True
 
-# ── Scheduled tasks ───────────────────────────────────────────────────────────
+# -- Scheduled tasks -----------------------------------------------------------
 
 def should_run(key, interval_hours):
     last = recall("schedule", key)
@@ -1662,7 +1703,7 @@ def should_run(key, interval_hours):
 
 
 def run_strategic_thinking():
-    """Amber's daily deep think — synthesises all sources and generates proactive strategic insights for Paul."""
+    """Amber's daily deep think - synthesises all sources and generates proactive strategic insights for Paul."""
     log.info("Running strategic thinking session...")
 
     # Max 2 strategic insights per day
@@ -1745,7 +1786,7 @@ def run_strategic_thinking():
 
     context_text = "\n".join(context_parts)
 
-    prompt = f"""You are Agent Amber — a strategic intelligence assistant for Ocean Energy Pathway (OEP), a consultancy accelerating offshore wind development across emerging markets.
+    prompt = f"""You are Agent Amber - a strategic intelligence assistant for Ocean Energy Pathway (OEP), a consultancy accelerating offshore wind development across emerging markets.
 
 You have just completed your daily synthesis of OEP's operational and market intelligence. Your job is to think like a sharp strategy consultant and identify ONE insight that Paul (CEO) genuinely needs to know about.
 
@@ -1765,17 +1806,17 @@ Now think carefully. Ask yourself:
 - What connection between two seemingly separate things is worth exploring?
 - What would a smart external advisor notice that the team is too close to see?
 
-Only flag something if it is GENUINELY interesting and actionable. Do not fabricate insights — only work from the data above. If nothing stands out, say so.
+Only flag something if it is GENUINELY interesting and actionable. Do not fabricate insights - only work from the data above. If nothing stands out, say so.
 
 Respond in JSON only:
 {{
   "worth_flagging": true/false,
   "type": "opportunity" or "operational",
-  "headline": "One sharp sentence — what you noticed",
+  "headline": "One sharp sentence - what you noticed",
   "context": "2-3 sentences explaining the evidence and background",
   "why_it_matters": "1-2 sentences on the strategic or operational significance",
   "options": ["Option 1", "Option 2", "Option 3"],
-  "recommendation": "Your single recommended next step — specific and actionable",
+  "recommendation": "Your single recommended next step - specific and actionable",
   "confidence": "high/medium/low"
 }}"""
 
@@ -1814,11 +1855,11 @@ Respond in JSON only:
 
         body = f"""Hi Paul,
 
-Here's something I've been thinking about — [{insight_type}] {conf_label}
+Here's something I've been thinking about - [{insight_type}] {conf_label}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-------------------------------
 {headline}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-------------------------------
 
 **What I noticed**
 {context_str}
@@ -1832,10 +1873,10 @@ Here's something I've been thinking about — [{insight_type}] {conf_label}
 **What I'd recommend**
 {recommendation}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-------------------------------
 Reply to dig deeper or ask me to explore any of the options above.
 
-— Amber"""
+- Amber"""
 
         subject = f"[Amber] {headline}"
         send_email(PAUL_EMAIL, subject, body)
@@ -1881,12 +1922,12 @@ def run_weekly_briefing():
         "4) Persistent issues that have been flagged 3+ times, "
         "5) Board improvement recommendations, "
         "6) Top 5 priority actions for this week. "
-        "Be specific — name items, people, dates.",
+        "Be specific - name items, people, dates.",
         "Agent Amber",
         "amber@internal"
     )
     today = datetime.now().strftime("%d %b %Y")
-    send_email(APPROVER_EMAIL, f"[Agent Amber] Weekly Programme Briefing — {today}", briefing)
+    send_email(APPROVER_EMAIL, f"[Agent Amber] Weekly Programme Briefing - {today}", briefing)
     remember("schedule", "last_weekly_briefing", datetime.now(timezone.utc).isoformat())
     log.info("Weekly briefing sent")
 
@@ -1915,10 +1956,10 @@ def run_scheduled_tasks():
     if uk_hour >= 8 and should_run("last_strategic_think", 20):
         run_strategic_thinking()
         remember("schedule", "last_strategic_think", datetime.now(timezone.utc).isoformat())
-    # Proactive intelligence scan — keep running on UTC cycle
+    # Proactive intelligence scan - keep running on UTC cycle
     # (already handled in main loop counter)
 
-# ── Main inbox loop ───────────────────────────────────────────────────────────
+# -- Main inbox loop -----------------------------------------------------------
 
 def check_inbox():
     try:
@@ -1995,10 +2036,10 @@ def check_inbox():
     except Exception as e:
         log.error(f"Inbox check failed: {e}")
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# -- Entry point ---------------------------------------------------------------
 
 
-# ── Gmail inbox reader (Paul only) ────────────────────────────────────────────
+# -- Gmail inbox reader (Paul only) --------------------------------------------
 
 def get_gmail_access_token():
     """Get a fresh Gmail access token using the existing Google OAuth refresh token."""
@@ -2040,7 +2081,7 @@ def read_paul_inbox(hours=24, max_emails=30):
     """Read Paul's inbox and return a structured summary."""
     token = get_gmail_access_token()
     if not token:
-        return "Gmail not configured — cannot read inbox."
+        return "Gmail not configured - cannot read inbox."
 
     # Search for recent emails
     after_ts = int((datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp())
@@ -2081,12 +2122,12 @@ def read_paul_inbox(hours=24, max_emails=30):
 
     lines = []
     unread_count = sum(1 for e in emails if e["unread"])
-    lines.append(f"Inbox summary — last {hours}h — {len(emails)} emails ({unread_count} unread):\n")
+    lines.append(f"Inbox summary - last {hours}h - {len(emails)} emails ({unread_count} unread):\n")
     for e in emails:
-        status = "🔴 UNREAD" if e["unread"] else "✓ read"
+        status = "[!] UNREAD" if e["unread"] else "[sent] read"
         lines.append(f"{status} | {e['date'][:16]} | From: {e['from']} | {e['subject']}")
         if e["snippet"]:
-            lines.append(f"   → {e['snippet']}")
+            lines.append(f"   -> {e['snippet']}")
     return "\n".join(lines)
 
 def run_inbox_summary():
@@ -2102,10 +2143,10 @@ Here is the raw inbox data:
 
 Write Paul a concise, intelligent inbox summary. Structure it as:
 
-1. **Needs your reply** — emails where Paul hasn't responded and a response looks needed
-2. **Needs your attention** — important emails, decisions, or time-sensitive items  
-3. **FYI / low priority** — updates, newsletters, things he can skim or ignore
-4. **Anything you might have missed** — older unread items worth flagging
+1. **Needs your reply** - emails where Paul hasn't responded and a response looks needed
+2. **Needs your attention** - important emails, decisions, or time-sensitive items  
+3. **FYI / low priority** - updates, newsletters, things he can skim or ignore
+4. **Anything you might have missed** - older unread items worth flagging
 
 Be direct and specific. Name the sender and subject. Add a one-line note on why it matters where relevant.
 Keep the whole thing under 400 words. Don't pad it out."""
@@ -2117,13 +2158,13 @@ Keep the whole thing under 400 words. Don't pad it out."""
         )
         summary = response.content[0].text.strip()
         now_str = datetime.now(timezone.utc).strftime("%A %d %b, %H:%M UTC")
-        send_email(PAUL_EMAIL, f"[Amber] Inbox summary — {now_str}", summary)
+        send_email(PAUL_EMAIL, f"[Amber] Inbox summary - {now_str}", summary)
         remember("schedule", "last_inbox_summary", datetime.now(timezone.utc).isoformat())
         log.info("Inbox summary sent to Paul")
     except Exception as e:
         log.error(f"Inbox summary failed: {e}")
 
-# ── Slack integration ────────────────────────────────────────────────────────
+# -- Slack integration --------------------------------------------------------
 
 def slack_api(method, payload):
     """Call a Slack API method."""
@@ -2311,7 +2352,7 @@ class SlackHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(body)
             
-            # URL verification — skip signature check, respond immediately
+            # URL verification - skip signature check, respond immediately
             if payload.get("type") == "url_verification":
                 challenge = payload["challenge"]
                 response_body = json.dumps({"challenge": challenge}).encode("utf-8")
@@ -2373,7 +2414,7 @@ class SlackHandler(BaseHTTPRequestHandler):
 def start_slack_server():
     """Start the HTTP server for Slack events on port 8080."""
     if not SLACK_BOT_TOKEN:
-        log.info("Slack not configured — skipping")
+        log.info("Slack not configured - skipping")
         return
     try:
         server = HTTPServer(("0.0.0.0", 8080), SlackHandler)
@@ -2440,7 +2481,7 @@ def run_proactive_intelligence():
                 slack_digest.append(f"[#{ch['name']}] {name}: {text[:200]}")
 
     if not slack_digest:
-        log.info("No Slack activity in last 6 hours — skipping proactive scan")
+        log.info("No Slack activity in last 6 hours - skipping proactive scan")
         return
 
     # Get already-flagged insights to avoid repeating
@@ -2518,7 +2559,7 @@ I wanted to flag something I noticed from recent Slack activity:
 
 This is an automated insight from my monitoring of OEP channels. Reply if you'd like me to dig deeper.
 
-— Amber"""
+- Amber"""
 
         send_email(APPROVER_EMAIL, subject, body)
         log.info(f"Proactive email sent: {insight}")
@@ -2532,7 +2573,7 @@ This is an automated insight from my monitoring of OEP channels. Reply if you'd 
         log.error(f"Proactive intelligence error: {e}")
 
 if __name__ == "__main__":
-    log.info(f"Agent Amber v35 starting — polling every {POLL_INTERVAL}s")
+    log.info(f"Agent Amber v36 starting - polling every {POLL_INTERVAL}s")
     log.info(f"Watching:  {AGENT_EMAIL}")
     log.info(f"Approver:  {APPROVER_EMAIL}")
     log.info(f"Domain:    @{OEP_DOMAIN}")
