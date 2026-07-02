@@ -1370,52 +1370,43 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
     """
     Run the agentic loop: Amber thinks, picks tools, acts, learns, repeats.
     Returns the final response string.
+
+    Conversation rules enforced here:
+      - Every tool_use block MUST be followed by a tool_result in the very next
+        user message. No plain text user messages may be injected while
+        tool_results are pending.
+      - Nudges (force-finish, spiral warnings) are piggybacked onto the content
+        of the last real tool_result so the conversation structure stays valid.
     """
     log.info(f"Starting agentic loop for: {sender_email}")
-    
-    # Build initial context with memory
-    history = get_staff_history(sender_email)
-    persistent = get_persistent_issues()
+
+    history      = get_staff_history(sender_email)
+    persistent   = get_persistent_issues()
     recent_intel = get_recent_intel(days=7)
-    
+
     context_parts = [f"Email from: {sender_name} <{sender_email}>\n\n{question}"]
-    
+
     if history:
         context_parts.append("\nPREVIOUS INTERACTIONS WITH THIS PERSON:")
         for q, r, ts in history[:3]:
-            date_str = ts.strftime("%d %b %Y")
-            context_parts.append(f"[{date_str}] Asked: {q[:150]}")
-    
+            context_parts.append(f"[{ts.strftime('%d %b %Y')}] Asked: {q[:150]}")
+
     if persistent:
-        context_parts.append("\nPERSISTENT ISSUES (flagged 3+ consecutive checks - needs escalation):")
+        context_parts.append("\nPERSISTENT ISSUES (flagged 3+ consecutive checks):")
         for board, issue_type, desc, times, first_seen in persistent:
-            date_str = first_seen.strftime("%d %b")
-            context_parts.append(f"- {board}: {desc} (seen {times} times since {date_str})")
-    
+            context_parts.append(f"- {board}: {desc} (seen {times} times since {first_seen.strftime('%d %b')})")
+
     if recent_intel:
         context_parts.append("\nRECENT MARKET INTELLIGENCE (last 7 days):")
         for country, headline, summary, source, ts in recent_intel[:6]:
             context_parts.append(f"- {country}: {headline}")
 
     messages = [{"role": "user", "content": "\n".join(context_parts)}]
-
-    # Loop-detection: track recent tool calls to catch repetitive search spirals
-    recent_tool_calls = []  # rolling window of last 6 tool names
+    recent_tool_calls = []
 
     for iteration in range(max_iterations):
         log.info(f"Agentic loop iteration {iteration + 1}")
 
-        # Force finish when approaching limit - inject nudge 3 iterations before the end
-        if iteration == max_iterations - 3:
-            messages.append({
-                "role": "user",
-                "content": (
-                    "You are approaching the iteration limit. "
-                    "Stop searching and call the finish tool now with whatever you have found so far. "
-                    "Write your complete response inside the finish tool - do not summarise, write the full reply."
-                )
-            })
-        
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=4096,
@@ -1423,51 +1414,49 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
             tools=TOOLS,
             messages=messages
         )
-        
-        # Add assistant response to conversation
+
         messages.append({"role": "assistant", "content": response.content})
-        
-        # Check stop reason
+
+        # end_turn means no tool calls — extract text and return
         if response.stop_reason == "end_turn":
-            text = " ".join(block.text for block in response.content if hasattr(block, "text"))
+            text = " ".join(
+                block.text for block in response.content
+                if hasattr(block, "text") and block.text.strip()
+            )
             if text.strip():
                 return text
             break
-        
-        # Process tool calls — MUST collect ALL tool_use blocks in this response
-        # before acting on any of them, to ensure every tool_use gets a tool_result.
+
+        # Collect ALL tool_use blocks before executing any
         tool_calls = [b for b in response.content if b.type == "tool_use"]
-        tool_results = []
+        if not tool_calls:
+            break
+
+        tool_results   = []
         final_response = None
         iteration_tools = []
 
-        for block in tool_calls:
-            tool_name = block.name
+        for idx, block in enumerate(tool_calls):
+            tool_name  = block.name
             tool_input = dict(block.input)
-
             log.info(f"Tool call: {tool_name}({list(tool_input.keys())})")
             iteration_tools.append(tool_name)
-
             tool_input["_sender_email"] = sender_email
             result = execute_tool(tool_name, tool_input)
 
             if result == "__FINISH__":
-                # Still need to add a stub tool_result for this block so the
-                # conversation stays valid, then add stub results for any
-                # remaining tool calls in the same batch.
+                final_response = tool_input.get("response", "")
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
                     "content": "done"
                 })
-                final_response = tool_input.get("response", "")
-                # Add stub results for any tool_use blocks we haven't processed yet
-                remaining = tool_calls[tool_calls.index(block) + 1:]
-                for rem_block in remaining:
-                    log.info(f"Stub result for unprocessed tool: {rem_block.name}")
+                # Stub all remaining tool calls in this batch
+                for rem in tool_calls[idx + 1:]:
+                    log.info(f"Stub result for unprocessed tool: {rem.name}")
                     tool_results.append({
                         "type": "tool_result",
-                        "tool_use_id": rem_block.id,
+                        "tool_use_id": rem.id,
                         "content": "skipped - finish was called"
                     })
                 break
@@ -1477,41 +1466,53 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
                 "tool_use_id": block.id,
                 "content": str(result)[:8000]
             })
-        
+
+        # Post all tool results before returning or looping
+        if tool_results:
+            # Piggyback any nudge onto the last result's content string
+            # so we never inject a bare user text message mid-conversation.
+            recent_tool_calls.extend(iteration_tools)
+            recent_tool_calls = recent_tool_calls[-6:]
+
+            nudge = None
+            if iteration == max_iterations - 4:
+                nudge = (
+                    "[SYSTEM NOTE: You are approaching the iteration limit. "
+                    "Please call the finish tool on your next response with "
+                    "everything you have found. Write a complete reply.]"
+                )
+            elif (len(recent_tool_calls) == 6 and
+                    all(t in ("search_drive", "read_document", "web_search")
+                        for t in recent_tool_calls)):
+                log.warning("Search spiral detected - piggybacking nudge onto tool results")
+                nudge = (
+                    "[SYSTEM NOTE: You appear stuck in a search loop. "
+                    "Stop searching and call the finish tool now with what you have found. "
+                    "If you could not find everything, say so clearly.]"
+                )
+                recent_tool_calls = []
+
+            if nudge and tool_results:
+                tool_results[-1]["content"] = str(tool_results[-1]["content"]) + "\n\n" + nudge
+
+            messages.append({"role": "user", "content": tool_results})
+
         if final_response is not None:
-            # Ensure we never return an empty or whitespace-only response
             if final_response.strip():
                 return final_response
-            else:
-                log.warning("finish tool called with empty response - continuing loop")
+            log.warning("finish tool called with empty response - continuing loop")
 
-        # Update rolling tool call window and detect search spirals
-        recent_tool_calls.extend(iteration_tools)
-        recent_tool_calls = recent_tool_calls[-6:]  # keep last 6
-        if len(recent_tool_calls) == 6 and all(t in ("search_drive", "read_document", "web_search") for t in recent_tool_calls):
-            log.warning("Search spiral detected - forcing finish")
-            messages.append({
-                "role": "user",
-                "content": (
-                    "You appear to be stuck in a search loop. "
-                    "Stop searching now and call the finish tool with what you have. "
-                    "If you couldn't find everything, say so clearly and share what you did find."
-                )
-            })
-            recent_tool_calls = []  # reset so we don't keep injecting
-
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
-        else:
+        if not tool_results:
             break
-    
-    # Fallback - extract any text from the last assistant message
+
+    # Fallback: return any text from the last assistant message
     for msg in reversed(messages):
         if msg.get("role") == "assistant":
             content = msg.get("content", [])
             if isinstance(content, list):
                 text = " ".join(
-                    block.text for block in content if hasattr(block, "text") and block.text.strip()
+                    block.text for block in content
+                    if hasattr(block, "text") and block.text.strip()
                 )
                 if text.strip():
                     log.warning("Returning fallback text from last assistant message")
@@ -1521,8 +1522,9 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
     return (
         "I ran into difficulties completing this analysis - "
         "I may have been unable to access the files or data needed. "
-        "Please try again or let Paul know if this keeps happening."
+        "Please try again or contact Paul directly."
     )
+
 
 # -- Email helpers -------------------------------------------------------------
 
