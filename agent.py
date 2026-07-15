@@ -10,6 +10,16 @@ Agent Amber v36 - Full autonomous self-learning agent
 - Daily web search, weekly Monday briefing
 - Slide decks output as .pptx -> opens directly as Google Slides
   (requires: pip install python-pptx)
+
+PATCH NOTES (this version):
+- create_infographic no longer claims the slide deck was emailed when it
+  wasn't. It now tracks whether the send actually succeeded and only
+  says so if it did. If it failed, it tells the user why (e.g. permissions)
+  and points them to the Drive link instead.
+- HTTP errors from the Gmail send call are now logged with their actual
+  status code and response body, instead of a generic exception string.
+  This is what will show you clearly if the 403 permissions issue is fixed
+  or not, the next time this runs.
 """
 
 import imaplib
@@ -352,7 +362,12 @@ def get_drive_service():
             client_id=GOOGLE_CLIENT_ID,
             client_secret=GOOGLE_CLIENT_SECRET,
             token_uri="https://oauth2.googleapis.com/token",
-            scopes=["https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.readonly"]
+            scopes=[
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.readonly",
+            ]
         )
         # Refresh to get a valid access token
         creds.refresh(Request())
@@ -1181,10 +1196,16 @@ def execute_tool(tool_name, tool_input):
             return f"Slide deck created but could not upload to Drive: {err}"
 
         # -- Also email as attachment -----------------------------------------
+        # PATCHED: we now track whether the send actually succeeded, and log
+        # the real HTTP status/body on failure instead of a generic string.
+        email_sent = False
+        email_error = None
         try:
             import base64, email.mime.multipart, email.mime.text, email.mime.base, email.encoders
             token = get_gmail_access_token()
-            if token:
+            if not token:
+                email_error = "Gmail not configured (no access token)"
+            else:
                 msg = email.mime.multipart.MIMEMultipart()
                 msg["to"] = PAUL_EMAIL
                 msg["subject"] = f"[Amber] {title}"
@@ -1211,13 +1232,24 @@ def execute_tool(tool_name, tool_input):
                     method="POST"
                 )
                 urllib.request.urlopen(send_req, timeout=15)
+                email_sent = True
+        except urllib.error.HTTPError as e:
+            resp_body = e.read().decode("utf-8", errors="replace")
+            email_error = f"HTTP {e.code}: {resp_body[:200]}"
+            log.error(f"Slide deck email failed: {email_error}")
         except Exception as e:
+            email_error = str(e)
             log.error(f"Slide deck email failed: {e}")
+
+        if email_sent:
+            email_note = "I've also emailed it to you as a .pptx - click the Drive link and it will open directly in Google Slides."
+        else:
+            email_note = f"(Couldn't email the attachment - {email_error}. Use the Drive link above instead.)"
 
         return (
             f"Slide deck created ({len(sections)} slides)!\n\n"
             f"Open in Google Slides: {link}\n\n"
-            f"I've also emailed it to you as a .pptx - click the Drive link and it will open directly in Google Slides."
+            f"{email_note}"
         )
 
 
