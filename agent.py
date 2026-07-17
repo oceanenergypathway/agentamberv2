@@ -356,23 +356,50 @@ def get_drive_service():
         from google.auth.transport.requests import Request
         import googleapiclient.discovery as discovery
 
-        creds = Credentials(
-            token=None,
-            refresh_token=GOOGLE_REFRESH_TOKEN,
-            client_id=GOOGLE_CLIENT_ID,
-            client_secret=GOOGLE_CLIENT_SECRET,
-            token_uri="https://oauth2.googleapis.com/token",
-            scopes=[
+        # PATCHED: try the full scope set first (works once the refresh
+        # token has been reissued with Gmail consent). If Google rejects it
+        # with invalid_scope (refresh token doesn't have Gmail consent yet),
+        # fall back to Drive-only scopes so Drive search/read keeps working
+        # in the meantime, instead of failing outright.
+        scope_sets = [
+            [
                 "https://www.googleapis.com/auth/drive.file",
                 "https://www.googleapis.com/auth/drive.readonly",
                 "https://www.googleapis.com/auth/gmail.send",
                 "https://www.googleapis.com/auth/gmail.readonly",
-            ]
-        )
-        # Refresh to get a valid access token
-        creds.refresh(Request())
-        _drive_service = discovery.build("drive", "v3", credentials=creds)
-        log.info("Google Drive connected via OAuth")
+            ],
+            [
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/drive.readonly",
+            ],
+        ]
+
+        last_err = None
+        for i, scopes in enumerate(scope_sets):
+            try:
+                creds = Credentials(
+                    token=None,
+                    refresh_token=GOOGLE_REFRESH_TOKEN,
+                    client_id=GOOGLE_CLIENT_ID,
+                    client_secret=GOOGLE_CLIENT_SECRET,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    scopes=scopes
+                )
+                creds.refresh(Request())
+                _drive_service = discovery.build("drive", "v3", credentials=creds)
+                if i == 0:
+                    log.info("Google Drive connected via OAuth (Drive + Gmail scopes)")
+                else:
+                    log.warning(
+                        "Google Drive connected via OAuth (Drive-only scopes - "
+                        "refresh token does not have Gmail consent yet, "
+                        "Gmail sending/reading will still fail until it's reissued)"
+                    )
+                return _drive_service
+            except Exception as e:
+                last_err = e
+                continue
+        log.warning(f"Google Drive not available: {last_err}")
     except Exception as e:
         log.warning(f"Google Drive not available: {e}")
     return _drive_service
@@ -1389,6 +1416,16 @@ DATA QUALITY - flag per item:
 - No owner -> no accountability
 - Never updated since creation -> likely placeholder
 
+HANDLING TOOL FAILURES:
+If search_drive, read_document, read_paul_inbox, or any other tool returns an
+error or says it isn't available, do NOT stop, stall, or leave your response
+empty because of it. Note briefly in your final answer which source you
+couldn't access (e.g. "I wasn't able to open the Drive documents this time"),
+and give your best analysis using whatever information you DID successfully
+gather from other sources. A partial answer with a clear note about what's
+missing is always better than no answer. Never treat a tool failure as a
+reason to call finish with an empty response.
+
 TONE: Professional, collegial, specific. Avoid dramatic language.
 Always include a "Board improvements" section in full briefings.
 
@@ -1435,6 +1472,7 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
 
     messages = [{"role": "user", "content": "\n".join(context_parts)}]
     recent_tool_calls = []
+    empty_finish_count = 0  # PATCHED: track repeated blank finish calls
 
     for iteration in range(max_iterations):
         log.info(f"Agentic loop iteration {iteration + 1}")
@@ -1499,6 +1537,17 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
                 "content": str(result)[:8000]
             })
 
+        # PATCHED: figure out if this iteration was a blank finish call
+        # BEFORE we append tool_results, so we can piggyback a nudge on it
+        # in the same message (never inject a bare user text mid-conversation).
+        blank_finish_this_turn = (
+            final_response is not None and not final_response.strip()
+        )
+        if blank_finish_this_turn:
+            empty_finish_count += 1
+        else:
+            empty_finish_count = 0
+
         # Post all tool results before returning or looping
         if tool_results:
             # Piggyback any nudge onto the last result's content string
@@ -1507,7 +1556,18 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
             recent_tool_calls = recent_tool_calls[-6:]
 
             nudge = None
-            if iteration == max_iterations - 4:
+            if blank_finish_this_turn:
+                log.warning(
+                    f"finish tool called with empty response "
+                    f"({empty_finish_count}) - continuing loop"
+                )
+                nudge = (
+                    "[SYSTEM NOTE: Your last finish call had an EMPTY response field - "
+                    "nothing was sent. You must put the complete written answer directly "
+                    "in the finish tool's 'response' parameter. Do not call finish again "
+                    "unless you are including the full text of your reply in that field.]"
+                )
+            elif iteration == max_iterations - 4:
                 nudge = (
                     "[SYSTEM NOTE: You are approaching the iteration limit. "
                     "Please call the finish tool on your next response with "
@@ -1532,7 +1592,16 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
         if final_response is not None:
             if final_response.strip():
                 return final_response
-            log.warning("finish tool called with empty response - continuing loop")
+            # PATCHED: after repeated blank finishes, stop looping instead of
+            # burning through the rest of max_iterations. Fall through to the
+            # fallback-text logic below, which will try to salvage any real
+            # text Amber wrote, or return an honest "couldn't finish" message.
+            if empty_finish_count >= 3:
+                log.error(
+                    "finish called empty 3+ times in a row - stopping loop early "
+                    "instead of continuing to the iteration limit"
+                )
+                break
 
         if not tool_results:
             break
