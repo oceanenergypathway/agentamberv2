@@ -1479,13 +1479,26 @@ def run_agentic_loop(question, sender_name, sender_email, max_iterations=25):
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=4096,
+            max_tokens=8192,  # PATCHED: was 4096 - too small for requests like
+                              # "100-word summary of every project", which can
+                              # legitimately need thousands of output tokens.
+                              # A too-low limit here causes the model to run out
+                              # of room mid-write, which can surface as a broken
+                              # or empty finish tool call.
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             messages=messages
         )
 
         messages.append({"role": "assistant", "content": response.content})
+
+        # PATCHED: make truncated responses visible in the log directly,
+        # instead of only showing up indirectly as an empty/broken finish call.
+        if response.stop_reason == "max_tokens":
+            log.warning(
+                "Response hit the max_tokens limit - output may be truncated. "
+                "If this keeps happening, the task may need an even higher max_tokens."
+            )
 
         # end_turn means no tool calls — extract text and return
         if response.stop_reason == "end_turn":
