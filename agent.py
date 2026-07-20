@@ -362,11 +362,17 @@ def get_drive_service():
         # fall back to Drive-only scopes so Drive search/read keeps working
         # in the meantime, instead of failing outright.
         scope_sets = [
+            # PATCHED: added spreadsheets scope for the read_sheet_range /
+            # write_sheet_cells tools. NOTE: this scope, like gmail.send and
+            # gmail.readonly below, only takes effect once the refresh token
+            # itself is reissued via a fresh OAuth consent that includes it -
+            # adding it here alone does not grant it.
             [
                 "https://www.googleapis.com/auth/drive.file",
                 "https://www.googleapis.com/auth/drive.readonly",
                 "https://www.googleapis.com/auth/gmail.send",
                 "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/spreadsheets",
             ],
             [
                 "https://www.googleapis.com/auth/drive.file",
@@ -636,6 +642,42 @@ TOOLS = [
                 "limit": {"type": "integer", "description": "Max messages to return (default 30)", "default": 30}
             },
             "required": ["channel_name"]
+        }
+    },
+    {
+        "name": "read_sheet_range",
+        "description": "Read a range of cells from a Google Sheet. ALWAYS use this before writing to check which cells already have content - never overwrite an existing value without being told to.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "spreadsheet_id": {"type": "string", "description": "The Google Sheet's ID (from its URL, the long string between /d/ and /edit)"},
+                "range": {"type": "string", "description": "A1-notation range including the tab name, e.g. \"oep projects (do not edit here)!B6:C956\""}
+            },
+            "required": ["spreadsheet_id", "range"]
+        }
+    },
+    {
+        "name": "write_sheet_cells",
+        "description": "Write values into specific cells of a Google Sheet in one batch call. Use this to fill in project descriptions or other fields. Only include cells that are currently empty (check with read_sheet_range first) - never overwrite existing content unless explicitly instructed to. Batch as many cells as possible into one call rather than calling this repeatedly for single cells.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "spreadsheet_id": {"type": "string", "description": "The Google Sheet's ID"},
+                "sheet_name": {"type": "string", "description": "The tab/sheet name, e.g. \"oep projects (do not edit here)\""},
+                "updates": {
+                    "type": "array",
+                    "description": "Cells to write",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "cell": {"type": "string", "description": "Cell reference, e.g. 'B12'"},
+                            "value": {"type": "string", "description": "The value to write"}
+                        },
+                        "required": ["cell", "value"]
+                    }
+                }
+            },
+            "required": ["spreadsheet_id", "sheet_name", "updates"]
         }
     },
     {
@@ -1363,6 +1405,54 @@ def execute_tool(tool_name, tool_input):
         return f"Found {len(lines)} messages:\n\n" + "\n".join(lines)
 
 
+    elif tool_name == "read_sheet_range":
+        token = get_gmail_access_token()  # same OAuth token, reused across Google APIs
+        if not token:
+            return "Google Sheets not connected."
+        try:
+            spreadsheet_id = tool_input["spreadsheet_id"]
+            rng = tool_input["range"]
+            url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+                   f"/values/{urllib.parse.quote(rng)}")
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            resp = urllib.request.urlopen(req, timeout=15)
+            data = json.loads(resp.read())
+            return json.dumps({"range": data.get("range"), "values": data.get("values", [])})
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            return f"Sheets read error: HTTP {e.code}: {body[:300]}"
+        except Exception as e:
+            return f"Sheets read error: {e}"
+
+    elif tool_name == "write_sheet_cells":
+        token = get_gmail_access_token()
+        if not token:
+            return "Google Sheets not connected."
+        try:
+            spreadsheet_id = tool_input["spreadsheet_id"]
+            sheet_name = tool_input.get("sheet_name", "")
+            updates = tool_input["updates"]
+            data = []
+            for u in updates:
+                cell = u["cell"]
+                value = u["value"]
+                rng = f"'{sheet_name}'!{cell}" if sheet_name else cell
+                data.append({"range": rng, "values": [[value]]})
+            body = json.dumps({"valueInputOption": "USER_ENTERED", "data": data}).encode()
+            url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
+            req = urllib.request.Request(
+                url, data=body,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=30)
+            return f"Wrote {len(data)} cell(s) to the sheet successfully."
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            return f"Sheets write error: HTTP {e.code}: {body[:300]}"
+        except Exception as e:
+            return f"Sheets write error: {e}"
+
     elif tool_name == "finish":
         return "__FINISH__"
 
@@ -1425,6 +1515,27 @@ and give your best analysis using whatever information you DID successfully
 gather from other sources. A partial answer with a clear note about what's
 missing is always better than no answer. Never treat a tool failure as a
 reason to call finish with an empty response.
+
+FILLING IN PROJECT DESCRIPTIONS IN A GOOGLE SHEET:
+When asked to fill in project descriptions (or any other column) in a Google
+Sheet:
+1. Use read_sheet_range FIRST to see which rows already have a value in that
+   column and which are blank. NEVER overwrite a cell that already has
+   content unless explicitly told to replace it - treat existing entries as
+   deliberate and final.
+2. Match each row to the right project using its Project Code column - codes
+   are the reliable join key, not row position or project name (rows can be
+   reordered).
+3. Write descriptions around 100 words, professional tone, drawing on
+   monday.com data (status, budget, timeline, recent updates) and any
+   relevant Drive documents you can access. Match the tone/style of any
+   already-filled example descriptions in the sheet.
+4. Use write_sheet_cells to batch as many rows as possible into a single
+   call (e.g. 10-20 cells at once) rather than writing one cell per tool
+   call - this matters a lot for a sheet with many rows to fill.
+5. In your final response to the person, summarize how many descriptions
+   you wrote, how many you skipped because they already had content, and
+   flag any project codes you could not find enough information for.
 
 TONE: Professional, collegial, specific. Avoid dramatic language.
 Always include a "Board improvements" section in full briefings.
